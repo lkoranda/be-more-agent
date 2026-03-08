@@ -66,7 +66,8 @@ DEFAULT_CONFIG = {
     "camera_rotation": 0,
     "system_prompt_extras": "",
     "input_device": None,
-    "input_sample_rate": None
+    "input_sample_rate": None,
+    "output_device": None,
 }
 
 # LLM SETTINGS
@@ -93,28 +94,90 @@ CURRENT_CONFIG = load_config()
 TEXT_MODEL = CURRENT_CONFIG["text_model"]
 VISION_MODEL = CURRENT_CONFIG["vision_model"]
 
-def resolve_input_device(config):
-    """Resolve audio input device from config (index, name string, or None for default)."""
-    requested = config.get("input_device")
-    if requested in (None, "", "default"):
-        return None
+def _query_devices_safe():
     try:
-        devices = sd.query_devices()
+        return list(sd.query_devices())
     except Exception as e:
         print(f"[AUDIO] Device query failed: {e}", flush=True)
-        return None
-    if isinstance(requested, int) or (isinstance(requested, str) and requested.isdigit()):
-        index = int(requested)
-        if 0 <= index < len(devices):
-            return index
-        print(f"[AUDIO] Input device index {index} not found, using default.", flush=True)
-        return None
-    requested_lower = str(requested).lower()
-    for idx, dev in enumerate(devices):
-        if dev.get("max_input_channels", 0) > 0 and requested_lower in dev.get("name", "").lower():
+        return []
+
+
+def find_usb_audio_device(kind="input"):
+    """Return the index of the first USB audio device for the given kind ('input'/'output'), or None."""
+    ch_key = "max_input_channels" if kind == "input" else "max_output_channels"
+    for idx, dev in enumerate(_query_devices_safe()):
+        if dev.get(ch_key, 0) > 0 and "usb" in dev.get("name", "").lower():
             return idx
-    print(f"[AUDIO] Input device '{requested}' not found, using default.", flush=True)
     return None
+
+
+def print_audio_devices(input_idx, output_idx):
+    """Print a table of all audio devices, highlighting the selected ones."""
+    devices = _query_devices_safe()
+    if not devices:
+        return
+    print("[AUDIO] Available devices:", flush=True)
+    for idx, dev in enumerate(devices):
+        ic = dev.get("max_input_channels", 0)
+        oc = dev.get("max_output_channels", 0)
+        tags = ""
+        if idx == input_idx:
+            tags += "  <-- INPUT"
+        if idx == output_idx:
+            tags += "  <-- OUTPUT"
+        print(f"  [{idx:2d}] {dev['name']:<40} IN:{ic}  OUT:{oc}{tags}", flush=True)
+
+
+def resolve_input_device(config):
+    """Resolve audio input device: explicit config > USB auto-detect > system default."""
+    requested = config.get("input_device")
+    devices = _query_devices_safe()
+
+    if requested not in (None, "", "default"):
+        if isinstance(requested, int) or (isinstance(requested, str) and requested.isdigit()):
+            index = int(requested)
+            if 0 <= index < len(devices):
+                return index
+            print(f"[AUDIO] Input device index {index} out of range, falling back to USB auto-detect.", flush=True)
+        else:
+            requested_lower = str(requested).lower()
+            for idx, dev in enumerate(devices):
+                if dev.get("max_input_channels", 0) > 0 and requested_lower in dev.get("name", "").lower():
+                    return idx
+            print(f"[AUDIO] Input device '{requested}' not found, falling back to USB auto-detect.", flush=True)
+
+    # Auto-detect USB microphone
+    usb = find_usb_audio_device("input")
+    if usb is not None:
+        return usb
+
+    return None  # system default
+
+
+def resolve_output_device(config):
+    """Resolve audio output device: explicit config > USB auto-detect > system default."""
+    requested = config.get("output_device")
+    devices = _query_devices_safe()
+
+    if requested not in (None, "", "default"):
+        if isinstance(requested, int) or (isinstance(requested, str) and requested.isdigit()):
+            index = int(requested)
+            if 0 <= index < len(devices):
+                return index
+            print(f"[AUDIO] Output device index {index} out of range, falling back to USB auto-detect.", flush=True)
+        else:
+            requested_lower = str(requested).lower()
+            for idx, dev in enumerate(devices):
+                if dev.get("max_output_channels", 0) > 0 and requested_lower in dev.get("name", "").lower():
+                    return idx
+            print(f"[AUDIO] Output device '{requested}' not found, falling back to USB auto-detect.", flush=True)
+
+    # Auto-detect USB speaker
+    usb = find_usb_audio_device("output")
+    if usb is not None:
+        return usb
+
+    return None  # system default
 
 
 def choose_input_samplerate(device, preferred=None):
@@ -143,12 +206,19 @@ def choose_input_samplerate(device, preferred=None):
 
 
 INPUT_DEVICE_NAME = resolve_input_device(CURRENT_CONFIG)
-if INPUT_DEVICE_NAME is not None:
+OUTPUT_DEVICE_NAME = resolve_output_device(CURRENT_CONFIG)
+print_audio_devices(INPUT_DEVICE_NAME, OUTPUT_DEVICE_NAME)
+
+def _device_label(idx):
+    if idx is None:
+        return "system default"
     try:
-        _dev_info = sd.query_devices(INPUT_DEVICE_NAME)
-        print(f"[AUDIO] Using input device: {_dev_info.get('name', INPUT_DEVICE_NAME)}", flush=True)
+        return sd.query_devices(idx)["name"]
     except Exception:
-        print(f"[AUDIO] Using input device index: {INPUT_DEVICE_NAME}", flush=True)
+        return str(idx)
+
+print(f"[AUDIO] Input  → {_device_label(INPUT_DEVICE_NAME)}", flush=True)
+print(f"[AUDIO] Output → {_device_label(OUTPUT_DEVICE_NAME)}", flush=True)
 
 
 class BotStates:
@@ -611,6 +681,10 @@ class BotGUI:
         """
         MAX_CONSECUTIVE_OVERFLOWS = 5
         overflow_count = 0
+        _debug_tick = 0
+
+        print(f"[WAKE] Listening on device={stream_kwargs.get('device')} "
+              f"rate={stream_kwargs['samplerate']} blocksize={stream_kwargs.get('blocksize')}", flush=True)
 
         with sd.InputStream(**stream_kwargs) as stream:
             while True:
@@ -643,8 +717,14 @@ class BotGUI:
                     indices = np.arange(0, len(audio_data), step)[:target_chunk_size].astype(int)
                     audio_data = audio_data[indices]
 
+                peak = int(np.max(np.abs(audio_data))) if len(audio_data) > 0 else 0
+                _debug_tick += 1
+                if _debug_tick % 150 == 0:
+                    bar = "#" * min(40, peak // 200)
+                    print(f"[MIC] peak={peak:5d} |{bar:<40}|", flush=True)
+
                 # Skip prediction on silence to save CPU
-                if np.max(np.abs(audio_data)) < 200:
+                if peak < 200:
                     continue
 
                 prediction = self.oww_model.predict(audio_data)
@@ -722,12 +802,20 @@ class BotGUI:
         audio_data = np.concatenate(buffer, axis=0).flatten()
         audio_data = np.nan_to_num(audio_data, nan=0.0, posinf=0.0, neginf=0.0)
 
+        duration = len(audio_data) / samplerate
+        peak = float(np.max(np.abs(audio_data)))
+        print(f"[AUDIO] Captured {duration:.1f}s at {samplerate}Hz, peak={peak:.4f}", flush=True)
+
         # Resample to 16kHz — whisper.cpp requires 16kHz input
         TARGET_RATE = 16000
         if samplerate != TARGET_RATE:
             num_samples = int(len(audio_data) * (TARGET_RATE / samplerate))
             audio_data = scipy.signal.resample(audio_data, num_samples)
+            print(f"[AUDIO] Resampled {samplerate}Hz → {TARGET_RATE}Hz ({len(audio_data)} samples)", flush=True)
             samplerate = TARGET_RATE
+
+        if peak < 0.001:
+            print("[AUDIO] WARNING: audio is nearly silent — check mic connection and volume", flush=True)
 
         audio_data = (audio_data * 32767).astype(np.int16)
         with wave.open(filename, "wb") as wf:
@@ -971,22 +1059,25 @@ class BotGUI:
             self.current_audio_process.stdin.close() 
 
             try:
-                device_info = sd.query_devices(kind='output')
+                device_info = sd.query_devices(OUTPUT_DEVICE_NAME if OUTPUT_DEVICE_NAME is not None else sd.default.device[1])
                 native_rate = int(device_info['default_samplerate'])
-            except:
-                native_rate = 48000 
+            except Exception:
+                native_rate = 48000
 
             PIPER_RATE = 22050
             use_native_rate = False
-            
+
             try:
-                sd.check_output_settings(device=None, samplerate=PIPER_RATE)
-            except:
+                sd.check_output_settings(device=OUTPUT_DEVICE_NAME, samplerate=PIPER_RATE)
+            except Exception:
                 use_native_rate = True
 
-            with sd.RawOutputStream(samplerate=native_rate if use_native_rate else PIPER_RATE, 
-                                    channels=1, dtype='int16', 
-                                    device=None, latency='low', blocksize=2048) as stream:
+            print(f"[PIPER] Output device={_device_label(OUTPUT_DEVICE_NAME)} "
+                  f"rate={native_rate if use_native_rate else PIPER_RATE}", flush=True)
+
+            with sd.RawOutputStream(samplerate=native_rate if use_native_rate else PIPER_RATE,
+                                    channels=1, dtype='int16',
+                                    device=OUTPUT_DEVICE_NAME, latency='low', blocksize=2048) as stream:
                 while True:
                     if self.interrupted.is_set(): break
                     data = self.current_audio_process.stdout.read(4096)
@@ -1036,20 +1127,20 @@ class BotGUI:
                 audio = np.frombuffer(data, dtype=np.int16)
 
             try:
-                device_info = sd.query_devices(kind='output')
+                device_info = sd.query_devices(OUTPUT_DEVICE_NAME if OUTPUT_DEVICE_NAME is not None else sd.default.device[1])
                 native_rate = int(device_info['default_samplerate'])
-            except:
-                native_rate = 48000 
+            except Exception:
+                native_rate = 48000
 
             playback_rate = file_sr
             try:
-                sd.check_output_settings(device=None, samplerate=file_sr)
-            except:
+                sd.check_output_settings(device=OUTPUT_DEVICE_NAME, samplerate=file_sr)
+            except Exception:
                 playback_rate = native_rate
                 num_samples = int(len(audio) * (native_rate / file_sr))
                 audio = scipy.signal.resample(audio, num_samples).astype(np.int16)
 
-            sd.play(audio, playback_rate)
+            sd.play(audio, playback_rate, device=OUTPUT_DEVICE_NAME)
             sd.wait() 
         except: pass
 

@@ -6,5 +6,6 @@
     "camera_rotation": 0,
     "system_prompt_extras": "",
     "input_device": null,
-    "input_sample_rate": null
+    "input_sample_rate": null,
+    "output_device": null
 }
