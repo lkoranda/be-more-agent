@@ -9,7 +9,7 @@ NC='\033[0m'
 echo -e "${GREEN}🤖 Pi Local Assistant Setup Script${NC}"
 
 # 1. Install System Dependencies
-echo -e "${YELLOW}[1/8] Installing System Tools (apt)...${NC}"
+echo -e "${YELLOW}[1/9] Installing System Tools (apt)...${NC}"
 sudo apt update
 sudo apt install -y \
     python3-tk python3-dev \
@@ -18,13 +18,13 @@ sudo apt install -y \
     cmake build-essential espeak-ng git
 
 # 2. Create Folders (including faces/capturing)
-echo -e "${YELLOW}[2/8] Creating Folders...${NC}"
+echo -e "${YELLOW}[2/9] Creating Folders...${NC}"
 mkdir -p piper
 mkdir -p sounds/greeting_sounds sounds/thinking_sounds sounds/ack_sounds sounds/error_sounds
 mkdir -p faces/idle faces/listening faces/thinking faces/speaking faces/error faces/warmup faces/capturing
 
 # 3. Download Piper TTS (aarch64 only)
-echo -e "${YELLOW}[3/8] Setting up Piper TTS...${NC}"
+echo -e "${YELLOW}[3/9] Setting up Piper TTS...${NC}"
 ARCH=$(uname -m)
 if [ "$ARCH" == "aarch64" ]; then
     if [ -f "piper/piper" ]; then
@@ -45,7 +45,7 @@ fi
 
 # 4. Download Piper Voice Model
 # Use -s (non-empty size check) rather than -f so partially-downloaded files are re-fetched
-echo -e "${YELLOW}[4/8] Downloading Voice Model...${NC}"
+echo -e "${YELLOW}[4/9] Downloading Voice Model...${NC}"
 mkdir -p piper
 for MODEL_FILE in "en_GB-semaine-medium.onnx" "en_GB-semaine-medium.onnx.json"; do
     DEST="piper/$MODEL_FILE"
@@ -63,7 +63,7 @@ if [ ! -s "piper/en_GB-semaine-medium.onnx" ] || [ ! -s "piper/en_GB-semaine-med
 fi
 
 # 5. Install Python Libraries
-echo -e "${YELLOW}[5/8] Installing Python Libraries...${NC}"
+echo -e "${YELLOW}[5/9] Installing Python Libraries...${NC}"
 if [ -d "venv" ]; then
     VENV_PY=$(venv/bin/python --version 2>&1 | cut -d' ' -f2 | cut -d'.' -f1,2)
     SYS_PY=$(python3 --version 2>&1 | cut -d' ' -f2 | cut -d'.' -f1,2)
@@ -87,7 +87,7 @@ pip install onnxruntime
 pip install -r requirements.txt
 
 # 6. Install Ollama if missing
-echo -e "${YELLOW}[6/8] Checking Ollama...${NC}"
+echo -e "${YELLOW}[6/9] Checking Ollama...${NC}"
 if ! command -v ollama &> /dev/null; then
     echo -e "${YELLOW}Ollama not found. Installing...${NC}"
     curl -fsSL https://ollama.ai/install.sh | sh
@@ -96,7 +96,7 @@ ollama pull gemma3:1b
 ollama pull moondream
 
 # 7. Download Wake Word Model
-echo -e "${YELLOW}[7/8] Setting up Wake Word...${NC}"
+echo -e "${YELLOW}[7/9] Setting up Wake Word...${NC}"
 if [ ! -f "wakeword.onnx" ]; then
     echo -e "${YELLOW}Downloading default 'Hey Jarvis' wake word...${NC}"
     curl -L -o wakeword.onnx \
@@ -108,7 +108,7 @@ if [ ! -f "wakeword.onnx" ] || [ ! -s "wakeword.onnx" ]; then
 fi
 
 # 8. Build whisper.cpp (THE key missing step — fixes empty transcription on all fresh installs)
-echo -e "${YELLOW}[8/8] Building whisper.cpp (Speech-to-Text engine)...${NC}"
+echo -e "${YELLOW}[8/9] Building whisper.cpp (Speech-to-Text engine)...${NC}"
 if [ ! -d "whisper.cpp" ]; then
     git clone https://github.com/ggerganov/whisper.cpp.git
 fi
@@ -136,9 +136,43 @@ else
 fi
 cd ..
 
+# 9. USB mic ALSA gain + full stack verification
+echo -e "${YELLOW}[9/9] Verifying stack and checking audio levels...${NC}"
+
+# Boost USB mic capture gain — Pi5 USB mics often default to near-zero
+if command -v amixer &>/dev/null; then
+    USB_CARD=$(arecord -l 2>/dev/null | grep -i "usb" | grep -oP 'card \K[0-9]+' | head -1)
+    if [ -n "$USB_CARD" ]; then
+        echo -e "${YELLOW}  USB audio on ALSA card $USB_CARD — normalizing capture volume to 80%...${NC}"
+        for ctrl in "Mic" "Capture" "Mic Capture Volume" "PCM Capture Volume" \
+                    "Mic Boost" "Digital Capture Volume"; do
+            amixer -c "$USB_CARD" sset "$ctrl" 80% 2>/dev/null \
+                && echo -e "${GREEN}    ✓ Set '$ctrl' to 80%${NC}"
+        done
+        # Disable Auto Gain Control — causes unpredictable mic levels
+        amixer -c "$USB_CARD" sset "Auto Gain Control" off 2>/dev/null \
+            && echo -e "${GREEN}    ✓ Disabled Auto Gain Control${NC}"
+    else
+        echo -e "${YELLOW}  No USB audio card detected via arecord — skipping ALSA gain step${NC}"
+    fi
+else
+    echo -e "${YELLOW}  amixer not found — skipping ALSA gain step (install alsa-utils)${NC}"
+fi
+
+# Run full stack verification (non-blocking — verify.sh exits 0 even with warnings)
+if [ -f "verify.sh" ]; then
+    echo ""
+    bash verify.sh || true
+else
+    echo -e "${YELLOW}  verify.sh not found — skipping stack verification${NC}"
+fi
+
 echo ""
 echo -e "${GREEN}✨ Setup Complete!${NC}"
 echo ""
 echo -e "${YELLOW}To run the agent:${NC}"
 echo "  source venv/bin/activate"
 echo "  python agent.py"
+echo ""
+echo -e "${YELLOW}To re-run verification at any time:${NC}"
+echo "  source venv/bin/activate && bash verify.sh"
