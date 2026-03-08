@@ -73,7 +73,8 @@ DEFAULT_CONFIG = {
     # Recording
     "silence_to_stop":      1.5,    # seconds of post-speech silence before cutting off
     # Transcription
-    "whisper_language":     "en",   # language code: en, de, fr, es, ...
+    "whisper_model":        "base.en",  # tiny.en = ~2x faster, slightly less accurate
+    "whisper_language":     "en",       # language code: en, de, fr, es, ...
     "whisper_threads":      4,
     # LLM
     "llm_temperature":      0.7,
@@ -892,13 +893,15 @@ class BotGUI:
     def transcribe_audio(self, filename):
         print("Transcribing...", flush=True)
         WHISPER_BIN = "./whisper.cpp/build/bin/whisper-cli"
-        WHISPER_MODEL = "./whisper.cpp/models/ggml-base.en.bin"
+        whisper_model_name = CURRENT_CONFIG.get("whisper_model", "base.en")
+        WHISPER_MODEL = f"./whisper.cpp/models/ggml-{whisper_model_name}.bin"
 
         if not os.path.exists(WHISPER_BIN):
             print(f"[ERROR] whisper-cli not found at {WHISPER_BIN}. Run setup.sh first.", flush=True)
             return ""
         if not os.path.exists(WHISPER_MODEL):
-            print(f"[ERROR] Whisper model not found at {WHISPER_MODEL}. Run setup.sh first.", flush=True)
+            print(f"[ERROR] Whisper model not found at {WHISPER_MODEL}.", flush=True)
+            print(f"[ERROR] Run: cd whisper.cpp && bash models/download-ggml-model.sh {whisper_model_name}", flush=True)
             return ""
 
         try:
@@ -976,15 +979,19 @@ class BotGUI:
 
         thinking_mode = CURRENT_CONFIG.get("thinking_mode", False)
 
+        # Build user content — prepend /no_think when thinking is off.
+        # Works as a prompt-level instruction (reliable across all Ollama versions)
+        # in addition to the think: false option (works on newer Ollama).
+        effective_text = text if thinking_mode else f"/no_think {text}"
+
         messages = []
         if img_path:
-            messages = [{"role": "user", "content": text, "images": [img_path]}]
+            messages = [{"role": "user", "content": effective_text, "images": [img_path]}]
         else:
-            user_msg = {"role": "user", "content": text}
+            user_msg = {"role": "user", "content": effective_text}
             messages = self.permanent_memory + self.session_memory + [user_msg]
 
-        # Ollama native think parameter — works for Qwen3/3.5 and any other
-        # model that exposes thinking mode. Ignored by models that don't support it.
+        # Ollama native think parameter + prompt-level /no_think = belt and braces
         call_options = dict(OLLAMA_OPTIONS)
         call_options["think"] = bool(thinking_mode)
         print(f"[LLM] model={model_to_use} thinking={thinking_mode}", flush=True)
@@ -1000,6 +1007,8 @@ class BotGUI:
 
             is_action_mode = False
             in_thinking_block = False   # tracks <think>...</think> from Qwen3/3.5
+            think_block_start = None
+            THINK_TIMEOUT = 90.0        # abort thinking block after 90 s
 
             for chunk in stream:
                 if self.interrupted.is_set(): break
@@ -1007,17 +1016,22 @@ class BotGUI:
                 full_response_buffer += raw
 
                 # ── Strip <think>...</think> reasoning blocks ──────────────
-                # Qwen3/3.5 emits these before the real response. We stay in
-                # THINKING state throughout and never send them to TTS.
                 if '<think>' in raw:
                     if not in_thinking_block:
                         print("[LLM] <think> block started — waiting for </think>", flush=True)
+                        think_block_start = time.time()
                     in_thinking_block = True
                 if '</think>' in raw:
                     in_thinking_block = False
-                    raw = raw.split('</think>', 1)[-1]  # keep text after tag
-                    print("[LLM] </think> block ended — real response begins", flush=True)
+                    think_block_start = None
+                    raw = raw.split('</think>', 1)[-1]
+                    print("[LLM] </think> ended — real response begins", flush=True)
                 if in_thinking_block:
+                    # Safety timeout — if thinking takes too long, bail out
+                    if think_block_start and (time.time() - think_block_start) > THINK_TIMEOUT:
+                        print(f"[LLM] <think> block exceeded {THINK_TIMEOUT}s — skipping rest of block", flush=True)
+                        in_thinking_block = False
+                        think_block_start = None
                     continue
                 content = raw
                 if not content:
@@ -1039,7 +1053,13 @@ class BotGUI:
                 self._stream_to_text(content)
 
                 sentence_buffer += content
-                if any(punct in content for punct in ".!?\n"):
+                # Flush to TTS on: sentence-end punctuation, OR comma/newline
+                # with enough content (avoid speaking tiny fragments), OR when
+                # buffer grows long without any punctuation (keeps latency low).
+                hard_end  = any(p in content for p in ".!?")
+                soft_break = any(p in content for p in ",;\n") and len(sentence_buffer) > 40
+                forced     = len(sentence_buffer) > 120
+                if hard_end or soft_break or forced:
                     clean_sentence = sentence_buffer.strip()
                     if clean_sentence and re.search(r'[a-zA-Z0-9]', clean_sentence):
                         with self.tts_queue_lock: self.tts_queue.append(clean_sentence)

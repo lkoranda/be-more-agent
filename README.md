@@ -142,6 +142,7 @@ All keys are optional — missing keys fall back to built-in defaults. Edit `con
 | `wake_word_model` | `./wakeword.onnx` | Path to the OpenWakeWord `.onnx` model file. Replace with your own trained wake word. |
 | `wake_word_threshold` | `0.5` | Detection confidence cutoff (0.0–1.0). Lower (e.g. `0.3`) = more sensitive, triggers more easily. Higher (e.g. `0.7`) = stricter, fewer false positives. |
 | `silence_to_stop` | `1.5` | Seconds of silence after speaking before recording stops. Raise to `2.0–2.5` if it cuts you off mid-sentence; lower to `0.8–1.0` for snappier responses. |
+| `whisper_model` | `"base.en"` | Whisper model size. `"tiny.en"` is ~2× faster with slightly lower accuracy (good for quiet, clear speech). `"base.en"` is the default. Must be downloaded first: `cd whisper.cpp && bash models/download-ggml-model.sh tiny.en` |
 | `whisper_language` | `"en"` | Language code for transcription. Use `"auto"` to detect automatically, or a code like `"de"`, `"fr"`, `"sk"`, etc. |
 | `whisper_threads` | `4` | CPU threads for the Whisper transcription process. |
 | `llm_temperature` | `0.7` | LLM response creativity (0.0–1.0). `0.3` = factual and concise; `0.9` = creative and varied. |
