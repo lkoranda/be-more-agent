@@ -72,7 +72,7 @@ curl -fsSL https://ollama.com/install.sh| sh
 ```
 *Pull the required models:*
 ```bash
-ollama pull gemma:2b
+ollama pull gemma3:1b
 ollama pull moondream
 ```
 
@@ -83,7 +83,7 @@ cd be-more-agent
 chmod +x setup.sh
 ./setup.sh
 ```
-*The setup script will install system libraries, create necessary folders, download Piper TTS, and set up the Python virtual environment.*
+*The setup script will install system libraries, create necessary folders, download Piper TTS, build whisper.cpp (speech-to-text engine), and set up the Python virtual environment. **Note:** The whisper.cpp build step can take 5–10 minutes on a Raspberry Pi 5.*
 
 ### 4. Configure the Wake Word
 The setup script downloads a default wake word ("Hey Jarvis"). To use your own:
