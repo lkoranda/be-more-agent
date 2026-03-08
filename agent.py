@@ -642,20 +642,30 @@ class BotGUI:
         self.set_state(BotStates.WARMUP, "Warming up brains...")
 
         whisper_model_name = CURRENT_CONFIG.get("whisper_model", "base.en")
+
+        rows = [
+            ("LLM (text)",    TEXT_MODEL),
+            ("LLM (vision)",  VISION_MODEL),
+            ("Voice (TTS)",   os.path.basename(CURRENT_CONFIG.get("voice_model", ""))),
+            ("Wake word",     os.path.basename(WAKE_WORD_MODEL)),
+            ("STT model",     whisper_model_name),
+            ("STT language",  CURRENT_CONFIG.get("whisper_language", "en")),
+            ("Thinking mode", "on" if CURRENT_CONFIG.get("thinking_mode", False) else "off"),
+            ("Audio input",   _device_label(INPUT_DEVICE_NAME)),
+            ("Audio output",  _device_label(OUTPUT_DEVICE_NAME)),
+        ]
+        LABEL_W = max(len(r[0]) for r in rows)
+        VAL_W   = max(max(len(r[1]) for r in rows), 20)
+        INNER_W = 2 + LABEL_W + 3 + VAL_W + 1
+        title   = "Be More Agent".center(INNER_W)
+        bar     = "─" * INNER_W
         print("", flush=True)
-        print("┌─────────────────────────────────────────────┐", flush=True)
-        print("│              Be More Agent                  │", flush=True)
-        print("├─────────────────────────────────────────────┤", flush=True)
-        print(f"│  LLM (text)   : {TEXT_MODEL:<28} │", flush=True)
-        print(f"│  LLM (vision) : {VISION_MODEL:<28} │", flush=True)
-        print(f"│  Voice (TTS)  : {CURRENT_CONFIG.get('voice_model',''):<28} │", flush=True)
-        print(f"│  Wake word    : {WAKE_WORD_MODEL:<28} │", flush=True)
-        print(f"│  STT model    : {whisper_model_name:<28} │", flush=True)
-        print(f"│  STT language : {CURRENT_CONFIG.get('whisper_language','en'):<28} │", flush=True)
-        print(f"│  Thinking mode: {'on' if CURRENT_CONFIG.get('thinking_mode', False) else 'off':<28} │", flush=True)
-        print(f"│  Audio input  : {_device_label(INPUT_DEVICE_NAME):<28} │", flush=True)
-        print(f"│  Audio output : {_device_label(OUTPUT_DEVICE_NAME):<28} │", flush=True)
-        print("└─────────────────────────────────────────────┘", flush=True)
+        print(f"┌{bar}┐", flush=True)
+        print(f"│{title}│", flush=True)
+        print(f"├{bar}┤", flush=True)
+        for label, value in rows:
+            print(f"│  {label:<{LABEL_W}} : {value:<{VAL_W}} │", flush=True)
+        print(f"└{bar}┘", flush=True)
         print("", flush=True)
 
         try:
