@@ -1054,6 +1054,7 @@ class BotGUI:
             stream = ollama.chat(model=model_to_use, messages=messages, stream=True, options=call_options)
 
             is_action_mode = False
+            speaking_started = False    # local flag — avoids tkinter async race on current_state
             in_thinking_block = False   # tracks <think>...</think> from Qwen3/3.5
             think_block_start = None
             THINK_TIMEOUT = 90.0        # abort thinking block after 90 s
@@ -1095,7 +1096,8 @@ class BotGUI:
                 if is_action_mode: continue
 
                 self.thinking_sound_active.clear()
-                if self.current_state != BotStates.SPEAKING:
+                if not speaking_started:
+                    speaking_started = True
                     self.set_state(BotStates.SPEAKING, "Speaking...", cam_path=img_path)
                     self.append_to_text("BOT: ", newline=False)
 
