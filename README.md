@@ -101,18 +101,55 @@ python agent.py
 
 ## 📂 Configuration (`config.json`)
 
-You can modify the hardware behavior and personality in `config.json`. The `agent.py` script creates this on the first run if it doesn't exist, but you can create it manually:
+All keys are optional — missing keys fall back to built-in defaults. Edit `config.json` in the project root to customise behaviour without touching code.
 
 ```json
 {
-    "text_model": "gemma3:1b",
-    "vision_model": "moondream",
-    "voice_model": "piper/en_GB-semaine-medium.onnx",
-    "chat_memory": true,
-    "camera_rotation": 0,
-    "system_prompt_extras": "You are a helpful robot assistant. Keep responses short and cute."
+    "text_model":           "gemma3:1b",
+    "vision_model":         "moondream",
+    "voice_model":          "piper/en_GB-semaine-medium.onnx",
+
+    "system_prompt_extras": "",
+    "chat_memory":          true,
+
+    "wake_word_model":      "./wakeword.onnx",
+    "wake_word_threshold":  0.5,
+
+    "silence_to_stop":      1.5,
+
+    "whisper_language":     "en",
+    "whisper_threads":      4,
+
+    "llm_temperature":      0.7,
+    "llm_threads":          4,
+
+    "camera_rotation":      0,
+    "input_device":         null,
+    "input_sample_rate":    null,
+    "output_device":        null
 }
 ```
+
+### Key reference
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `text_model` | `gemma3:1b` | Ollama model used for conversation. Swap for a larger model if your Pi has enough RAM (e.g. `gemma3:4b`). |
+| `vision_model` | `moondream` | Ollama model used when the agent looks at the camera. |
+| `voice_model` | `piper/en_GB-semaine-medium.onnx` | Path to the Piper `.onnx` voice file. |
+| `system_prompt_extras` | `""` | Extra instructions appended to the system prompt. Use this to define personality, e.g. `"You are a pirate. Always speak like one."` |
+| `chat_memory` | `true` | Keep conversation history across turns. Set to `false` for stateless one-shot queries. |
+| `wake_word_model` | `./wakeword.onnx` | Path to the OpenWakeWord `.onnx` model file. Replace with your own trained wake word. |
+| `wake_word_threshold` | `0.5` | Detection confidence cutoff (0.0–1.0). Lower (e.g. `0.3`) = more sensitive, triggers more easily. Higher (e.g. `0.7`) = stricter, fewer false positives. |
+| `silence_to_stop` | `1.5` | Seconds of silence after speaking before recording stops. Raise to `2.0–2.5` if it cuts you off mid-sentence; lower to `0.8–1.0` for snappier responses. |
+| `whisper_language` | `"en"` | Language code for transcription. Use `"auto"` to detect automatically, or a code like `"de"`, `"fr"`, `"sk"`, etc. |
+| `whisper_threads` | `4` | CPU threads for the Whisper transcription process. |
+| `llm_temperature` | `0.7` | LLM response creativity (0.0–1.0). `0.3` = factual and concise; `0.9` = creative and varied. |
+| `llm_threads` | `4` | CPU threads allocated to Ollama. Pi 5 has 4 cores; reduce to `3` on Pi 4 to leave headroom. |
+| `camera_rotation` | `0` | Rotate the camera image before sending to the vision model. Accepted values: `0`, `90`, `180`, `270`. |
+| `input_device` | `null` | Audio input override. `null` = auto-select first USB microphone. Set to a device name (partial match) or index number to force a specific device. |
+| `input_sample_rate` | `null` | Preferred sample rate for the input device. `null` = auto-detect. |
+| `output_device` | `null` | Audio output override. `null` = auto-select first USB speaker. Set to a device name or index to force a specific device. |
 
 ---
 
