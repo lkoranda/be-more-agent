@@ -2,7 +2,7 @@ sounddevice
 numpy
 scipy
 openwakeword
-onnxruntime
+tflite-runtime
 ollama
 duckduckgo-search
 Pillow
