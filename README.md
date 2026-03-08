@@ -164,33 +164,66 @@ This software is a generic framework. You can give it a new personality by repla
 
 ## 🧠 Recommended Models (Raspberry Pi 5)
 
-The default models are conservative. If you have a **Pi 5 with 8–16 GB RAM**, better options are available. All models below run via Ollama with no internet connection after download.
+The default models (`gemma3:1b` + `moondream`) are conservative starting points. With **Pi 5 16 GB RAM** you can run significantly more capable models. All run fully offline via Ollama.
 
-### Text / Conversation models
+The practical speed floor for a comfortable voice assistant is ~5 tok/s — below that, pauses between TTS sentences become noticeable.
 
-| Model | RAM | Speed (tok/s) | Notes |
-|-------|-----|---------------|-------|
-| `gemma3:1b` | ~1 GB | ~8–12 | Default — fast, limited reasoning |
-| `gemma3:4b` | ~3 GB | ~3–5 | Good upgrade, natural conversation |
-| `llama3.2:3b` | ~2 GB | ~4–6 | Solid alternative to gemma3:4b |
-| `qwen3.5:2b` | ~2.5 GB | ~10–12 | Excellent for size, natively multimodal |
-| `qwen3.5:4b` | ~3.4 GB | ~6–8 | **Recommended** — strong reasoning, vision built-in |
-| `qwen3.5:9b` | ~6.6 GB | ~3–4 | Best quality that fits in 16 GB |
-| `gemma3:12b` | ~8 GB | ~1–2 | Good quality but responses feel slow |
+### Full comparison (Pi 5 16 GB, CPU inference)
 
-> **Pi 5 16 GB sweet spot:** `qwen3.5:4b` or `qwen3.5:9b`
+| Model | Ollama tag | Q4 RAM | GPQA | Vision | Est. tok/s | Notes |
+|-------|-----------|--------|------|--------|-----------|-------|
+| **Qwen3.5 9B** | `qwen3.5:9b` | ~5 GB | 81.7 | ✅ native | 2–4 | Best reasoning, slightly slow |
+| **Qwen3.5 4B** | `qwen3.5:4b` | ~2.5 GB | ~74 | ✅ native | 5–8 | ⭐ Best all-round |
+| **Qwen3.5 2B** | `qwen3.5:2b` | ~1.5 GB | ~55 | ✅ native | 12–18 | Best speed+vision combo |
+| **Qwen3.5 0.8B** | `qwen3.5:0.8b` | ~0.6 GB | ~35 | ✅ native | 20–30 | Ultra-fast, limited reasoning |
+| **Gemma 3n E4B** | `gemma3n:e4b` | ~3 GB | n/a | ✅ vision+audio | 8–15 | Edge-optimised ARM, audio input |
+| **Gemma 3n E2B** | `gemma3n:e2b` | ~2 GB | n/a | ✅ vision+audio | 12–20 | Fastest multimodal option |
+| **Gemma 3 4B QAT** | `gemma3:4b-it-qat` | ~3 GB | ~42 | ✅ | 4–6 | QAT = near full-precision quality at int4 |
+| **Gemma 3 1B** | `gemma3:1b` | ~0.8 GB | low | ❌ | ~10 | Default — simple tasks only |
+| **Phi-4-mini** | `phi4-mini` | ~2.3 GB | 30–49 | ❌ | 6–10 | Outstanding STEM/math/coding |
+| **Phi-4-mini reasoning** | `phi4-mini-reasoning` | ~2.3 GB | 49 | ❌ | 6–10 | Best for structured reasoning chains |
+| **Ministral 3B** | `ministral:3b` | ~2 GB | n/a | ❌ | 8–12 | Strong function/tool calling |
+| **SmolLM2 1.7B** | `smollm2:1.7b` | ~1 GB | n/a | ❌ | 15–20 | Ultra-lightweight, text only |
+| **Llama 3.2 3B** | `llama3.2:3b` | ~2 GB | n/a | ❌ | 6–10 | Decent, outclassed by Qwen3.5:2b |
+| **Qwen3.5 35B-A3B** | `qwen3.5:35b-a3b` | ~22 GB | — | ✅ | n/a | ❌ Does NOT fit in 16 GB |
+| **Llama 4 Scout** | `llama4:scout` | ~55 GB | — | ✅ | n/a | ❌ Requires H100, not for Pi |
+| **Mistral Small 3.2** | `mistral-small3.2` | ~14 GB | — | ✅ | <1 | ❌ Too slow on CPU |
 
-### Vision models
+### Recommendations by use case
 
-| Model | RAM | Notes |
-|-------|-----|-------|
-| `moondream` | ~1.7 GB | Default — lightweight, fast, good for basic scene description |
-| `qwen3.5:4b` | ~3.4 GB | Natively multimodal — can replace both `text_model` and `vision_model` |
-| `qwen3.5:9b` | ~6.6 GB | Best vision quality that comfortably fits in 16 GB |
+**Best all-round (16 GB Pi 5)**
+```json
+{ "text_model": "qwen3.5:4b", "vision_model": "qwen3.5:4b" }
+```
+Qwen3.5 4B has native vision baked in — one model covers both text and camera. GPQA ~74 is well ahead of any competitor at this size.
+
+**Fastest conversational (responses under 1 second)**
+```json
+{ "text_model": "qwen3.5:2b", "vision_model": "qwen3.5:2b" }
+```
+12–18 tok/s makes pauses essentially imperceptible. Retains native vision and 256K context.
+
+**Best quality (patient user)**
+```json
+{ "text_model": "qwen3.5:9b", "vision_model": "qwen3.5:9b" }
+```
+GPQA 81.7 — beats GPT-OSS-120B on graduate-level science questions. Fits in 16 GB with ~10 GB to spare.
+
+**Best for STEM / coding assistant**
+```json
+{ "text_model": "phi4-mini-reasoning", "vision_model": "moondream" }
+```
+Phi-4-mini reasoning matches DeepSeek-R1-Distill 7B on AIME math at 3.8B parameters.
+
+**Interesting alternative — Gemma 3n E4B**
+```json
+{ "text_model": "gemma3n:e4b", "vision_model": "gemma3n:e4b" }
+```
+Purpose-built for ARM edge devices. LMArena >1300 (first sub-10B to hit this). Has **audio input natively** — potentially useful for a voice pipeline. Worth benchmarking against Qwen3.5:4b on your specific Pi.
 
 ### Qwen3.5 as a single model for text + vision
 
-All Qwen3.5 models have vision built into the weights (early fusion multimodal). You can point both `text_model` and `vision_model` at the same model to simplify your setup:
+All Qwen3.5 models have vision baked in (early fusion multimodal training, not a bolt-on). Use one model for everything:
 
 ```json
 {
@@ -199,18 +232,19 @@ All Qwen3.5 models have vision built into the weights (early fusion multimodal).
 }
 ```
 
-This uses one model for everything and avoids loading moondream separately.
+> **Note:** Qwen3.5 vision in Ollama requires an updated GGUF build (released March 5, 2026). Run `ollama pull qwen3.5:4b` to get the latest. If the camera command produces errors, update Ollama first.
 
-### What about qwen3.5:35b-a3b?
-
-The 35B MoE model activates only ~3B parameters per token (very fast inference), but all 35B weights still need to fit in RAM. At Q4 quantization that is **~22–24 GB** — it does not fit in 16 GB. You would need a Pi 5 with 16 GB + swap or a different device. Stick with 9b on 16 GB.
-
-### Pull a model
+### Pull models
 
 ```bash
+# Recommended starting point
 ollama pull qwen3.5:4b
-# or
+
+# Or for best quality
 ollama pull qwen3.5:9b
+
+# Or for maximum speed
+ollama pull qwen3.5:2b
 ```
 
 ---
