@@ -14,7 +14,7 @@ sudo apt update
 sudo apt install -y \
     python3-tk python3-dev \
     libasound2-dev portaudio19-dev \
-    libatlas-base-dev liblapack-dev libblas-dev \
+    libopenblas-dev liblapack-dev libblas-dev \
     cmake build-essential espeak-ng git
 
 # 2. Create Folders (including faces/capturing)
@@ -95,12 +95,16 @@ fi
 
 # 8. Build whisper.cpp (THE key missing step — fixes empty transcription on all fresh installs)
 echo -e "${YELLOW}[8/8] Building whisper.cpp (Speech-to-Text engine)...${NC}"
-echo -e "${YELLOW}      This step takes 5-10 minutes on Raspberry Pi 5.${NC}"
+echo -e "${YELLOW}      This step takes 3-5 minutes on Raspberry Pi 5.${NC}"
 if [ ! -d "whisper.cpp" ]; then
     git clone https://github.com/ggerganov/whisper.cpp.git
 fi
 cd whisper.cpp
-make -j$(nproc)
+
+# Use cmake (required by modern whisper.cpp releases)
+cmake -B build -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON
+cmake --build build --config Release -j$(nproc)
+
 mkdir -p models
 if [ ! -f "models/ggml-base.en.bin" ]; then
     echo -e "${YELLOW}Downloading Whisper base English model (~142MB)...${NC}"
