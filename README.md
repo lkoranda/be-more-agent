@@ -146,6 +146,7 @@ All keys are optional — missing keys fall back to built-in defaults. Edit `con
 | `whisper_threads` | `4` | CPU threads for the Whisper transcription process. |
 | `llm_temperature` | `0.7` | LLM response creativity (0.0–1.0). `0.3` = factual and concise; `0.9` = creative and varied. |
 | `llm_threads` | `4` | CPU threads allocated to Ollama. Pi 5 has 4 cores; reduce to `3` on Pi 4 to leave headroom. |
+| `thinking_mode` | `false` | **Qwen3/3.5 only.** When `false`, appends `/no_think` to each message, disabling the internal reasoning block for faster responses. Set to `true` to enable step-by-step reasoning (better accuracy on complex questions, higher latency). Has no effect on other models. |
 | `camera_rotation` | `0` | Rotate the camera image before sending to the vision model. Accepted values: `0`, `90`, `180`, `270`. |
 | `input_device` | `null` | Audio input override. `null` = auto-select first USB microphone. Set to a device name (partial match) or index number to force a specific device. |
 | `input_sample_rate` | `null` | Preferred sample rate for the input device. `null` = auto-detect. |

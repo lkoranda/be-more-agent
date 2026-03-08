@@ -78,6 +78,7 @@ DEFAULT_CONFIG = {
     # LLM
     "llm_temperature":      0.7,
     "llm_threads":          4,
+    "thinking_mode":        False,  # Qwen3/3.5: True = reasoning before answer, False = faster direct response
     # Hardware
     "camera_rotation":      0,
     "input_device":         None,
@@ -972,34 +973,55 @@ class BotGUI:
 
         model_to_use = VISION_MODEL if img_path else TEXT_MODEL
         self.set_state(BotStates.THINKING, "Thinking...", cam_path=img_path)
-        
+
+        # Qwen3/3.5: append /no_think to user message when thinking_mode is off.
+        # This disables the <think>...</think> reasoning block, reducing latency.
+        thinking_mode = CURRENT_CONFIG.get("thinking_mode", False)
+        effective_text = text if thinking_mode else f"{text} /no_think"
+
         messages = []
         if img_path:
-            messages = [{"role": "user", "content": text, "images": [img_path]}]
+            messages = [{"role": "user", "content": effective_text, "images": [img_path]}]
         else:
-            user_msg = {"role": "user", "content": text}
+            user_msg = {"role": "user", "content": effective_text}
             messages = self.permanent_memory + self.session_memory + [user_msg]
         
         self.thinking_sound_active.set()
         threading.Thread(target=self._run_thinking_sound_loop, daemon=True).start()
         
         full_response_buffer = ""
-        sentence_buffer = "" 
-        
+        sentence_buffer = ""
+
         try:
             stream = ollama.chat(model=model_to_use, messages=messages, stream=True, options=OLLAMA_OPTIONS)
-            
+
             is_action_mode = False
-            
+            in_thinking_block = False   # tracks <think>...</think> from Qwen3/3.5
+
             for chunk in stream:
-                if self.interrupted.is_set(): break 
-                content = chunk['message']['content']
-                full_response_buffer += content
-                
+                if self.interrupted.is_set(): break
+                raw = chunk['message']['content']
+                full_response_buffer += raw
+
+                # ── Strip <think>...</think> reasoning blocks ──────────────
+                # Qwen3/3.5 emits these before the real response. We stay in
+                # THINKING state throughout and never send them to TTS.
+                if '<think>' in raw:
+                    in_thinking_block = True
+                if '</think>' in raw:
+                    in_thinking_block = False
+                    raw = raw.split('</think>', 1)[-1]  # keep text after tag
+                if in_thinking_block:
+                    continue
+                content = raw
+                if not content:
+                    continue
+                # ──────────────────────────────────────────────────────────
+
                 if '{"' in content or "action:" in content.lower():
                     is_action_mode = True
                     self.thinking_sound_active.clear()
-                    continue 
+                    continue
 
                 if is_action_mode: continue
 
@@ -1009,7 +1031,7 @@ class BotGUI:
                     self.append_to_text("BOT: ", newline=False)
 
                 self._stream_to_text(content)
-                
+
                 sentence_buffer += content
                 if any(punct in content for punct in ".!?\n"):
                     clean_sentence = sentence_buffer.strip()
