@@ -64,6 +64,14 @@ fi
 
 # 5. Install Python Libraries
 echo -e "${YELLOW}[5/8] Installing Python Libraries...${NC}"
+if [ -d "venv" ]; then
+    VENV_PY=$(venv/bin/python --version 2>&1 | cut -d' ' -f2 | cut -d'.' -f1,2)
+    SYS_PY=$(python3 --version 2>&1 | cut -d' ' -f2 | cut -d'.' -f1,2)
+    if [ "$VENV_PY" != "$SYS_PY" ]; then
+        echo -e "${YELLOW}Python version mismatch (venv: $VENV_PY, system: $SYS_PY). Recreating venv...${NC}"
+        rm -rf venv
+    fi
+fi
 if [ ! -d "venv" ]; then
     python3 -m venv venv
 fi
