@@ -646,13 +646,10 @@ class BotGUI:
 
     def record_voice_adaptive(self, filename="input.wav"):
         print("Recording (Adaptive)...", flush=True)
-        time.sleep(0.5) 
-        try:
-            device_info = sd.query_devices(kind='input')
-            samplerate = int(device_info['default_samplerate'])
-        except: samplerate = 44100 
+        time.sleep(0.5)
+        samplerate = choose_input_samplerate(INPUT_DEVICE_NAME, CURRENT_CONFIG.get("input_sample_rate"))
 
-        silence_threshold = 0.006
+        silence_threshold = 0.015
         silence_duration = 1.5
         max_record_time = 30.0
         buffer = []
@@ -677,29 +674,35 @@ class BotGUI:
             else: silent_chunks = 0
 
         try:
-            with sd.InputStream(samplerate=samplerate, channels=1, callback=callback, 
-                                device=INPUT_DEVICE_NAME, blocksize=chunk_size): 
+            sd.stop()
+            time.sleep(0.2)
+            with sd.InputStream(samplerate=samplerate, channels=1, callback=callback,
+                                device=INPUT_DEVICE_NAME, blocksize=chunk_size):
                 while not silence_started and recorded_chunks < max_chunks:
                     sd.sleep(int(chunk_duration * 1000))
-        except Exception as e: return None 
-        
+        except Exception as e:
+            print(f"[AUDIO ERROR] Adaptive recording failed: {e}", flush=True)
+            return None
+
         return self.save_audio_buffer(buffer, filename, samplerate)
 
     def record_voice_ptt(self, filename="input.wav"):
         print("Recording (PTT)...", flush=True)
         time.sleep(0.5)
-        try:
-            device_info = sd.query_devices(kind='input')
-            samplerate = int(device_info['default_samplerate'])
-        except: samplerate = 44100 
+        samplerate = choose_input_samplerate(INPUT_DEVICE_NAME, CURRENT_CONFIG.get("input_sample_rate"))
 
         buffer = []
         def callback(indata, frames, time_info, status): buffer.append(indata.copy())
-        
+
         try:
+            sd.stop()
+            time.sleep(0.2)
             with sd.InputStream(samplerate=samplerate, channels=1, callback=callback, device=INPUT_DEVICE_NAME):
-                while self.recording_active.is_set(): sd.sleep(50)
-        except Exception as e: return None
+                while self.recording_active.is_set():
+                    sd.sleep(50)
+        except Exception as e:
+            print(f"[AUDIO ERROR] PTT recording failed: {e}", flush=True)
+            return None
             
         return self.save_audio_buffer(buffer, filename, samplerate)
 
