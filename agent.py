@@ -729,21 +729,47 @@ class BotGUI:
 
     def transcribe_audio(self, filename):
         print("Transcribing...", flush=True)
+        WHISPER_BIN = "./whisper.cpp/build/bin/whisper-cli"
+        WHISPER_MODEL = "./whisper.cpp/models/ggml-base.en.bin"
+
+        if not os.path.exists(WHISPER_BIN):
+            print(f"[ERROR] whisper-cli not found at {WHISPER_BIN}. Run setup.sh first.", flush=True)
+            return ""
+        if not os.path.exists(WHISPER_MODEL):
+            print(f"[ERROR] Whisper model not found at {WHISPER_MODEL}. Run setup.sh first.", flush=True)
+            return ""
+
         try:
             result = subprocess.run(
-                ["./whisper.cpp/build/bin/whisper-cli", "-m", "./whisper.cpp/models/ggml-base.en.bin", "-l", "en", "-t", "4", "-f", filename],
-                capture_output=True, text=True
+                [WHISPER_BIN, "-m", WHISPER_MODEL, "-l", "en", "-t", "4", "-f", filename],
+                capture_output=True, text=True, timeout=60
             )
-            transcription_lines = result.stdout.strip().split('\n')
+
+            if result.returncode != 0:
+                error_detail = (result.stderr or result.stdout or "no output").strip()[:200]
+                print(f"[ERROR] Whisper failed (code {result.returncode}): {error_detail}", flush=True)
+                return ""
+
+            # Some whisper.cpp builds write transcription to stderr; check both
+            output = (result.stdout + result.stderr).strip()
+            transcription_lines = output.split('\n')
+
+            transcription = ""
             if transcription_lines and transcription_lines[-1].strip():
                 last_line = transcription_lines[-1].strip()
-                if ']' in last_line: transcription = last_line.split("]")[1].strip()
-                else: transcription = last_line
-            else: transcription = ""
+                if ']' in last_line:
+                    transcription = last_line.split("]")[1].strip()
+                else:
+                    transcription = last_line
+
             print(f"Heard: '{transcription}'", flush=True)
             return transcription.strip()
+
+        except subprocess.TimeoutExpired:
+            print("[ERROR] Whisper timed out after 60 seconds.", flush=True)
+            return ""
         except Exception as e:
-            print(f"Transcription Error: {e}")
+            print(f"[ERROR] Transcription error: {e}", flush=True)
             return ""
 
     def capture_image(self):
