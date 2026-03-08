@@ -53,30 +53,36 @@ from duckduckgo_search import DDGS
 CONFIG_FILE = "config.json"
 MEMORY_FILE = "memory.json"
 BMO_IMAGE_FILE = "current_image.jpg"
-WAKE_WORD_MODEL = "./wakeword.onnx"
-WAKE_WORD_THRESHOLD = 0.5
+# Resolved after config is loaded — see below DEFAULT_CONFIG block
+WAKE_WORD_MODEL     = None
+WAKE_WORD_THRESHOLD = None
 
 # HARDWARE SETTINGS
 
 DEFAULT_CONFIG = {
-    "text_model": "gemma3:1b",
-    "vision_model": "moondream",
-    "voice_model": "piper/en_GB-semaine-medium.onnx",
-    "chat_memory": True,
-    "camera_rotation": 0,
+    # Models
+    "text_model":           "gemma3:1b",
+    "vision_model":         "moondream",
+    "voice_model":          "piper/en_GB-semaine-medium.onnx",
+    # Personality
     "system_prompt_extras": "",
-    "input_device": None,
-    "input_sample_rate": None,
-    "output_device": None,
-}
-
-# LLM SETTINGS
-OLLAMA_OPTIONS = {
-    'keep_alive': '-1',     
-    'num_thread': 4,
-    'temperature': 0.7,     
-    'top_k': 40,
-    'top_p': 0.9
+    "chat_memory":          True,
+    # Wake word
+    "wake_word_model":      "./wakeword.onnx",
+    "wake_word_threshold":  0.5,    # 0.3 = more sensitive, 0.7 = stricter
+    # Recording
+    "silence_to_stop":      1.5,    # seconds of post-speech silence before cutting off
+    # Transcription
+    "whisper_language":     "en",   # language code: en, de, fr, es, ...
+    "whisper_threads":      4,
+    # LLM
+    "llm_temperature":      0.7,
+    "llm_threads":          4,
+    # Hardware
+    "camera_rotation":      0,
+    "input_device":         None,
+    "input_sample_rate":    None,
+    "output_device":        None,
 }
 
 def load_config():
@@ -91,8 +97,18 @@ def load_config():
     return config
 
 CURRENT_CONFIG = load_config()
-TEXT_MODEL = CURRENT_CONFIG["text_model"]
-VISION_MODEL = CURRENT_CONFIG["vision_model"]
+TEXT_MODEL          = CURRENT_CONFIG["text_model"]
+VISION_MODEL        = CURRENT_CONFIG["vision_model"]
+WAKE_WORD_MODEL     = CURRENT_CONFIG["wake_word_model"]
+WAKE_WORD_THRESHOLD = float(CURRENT_CONFIG["wake_word_threshold"])
+
+OLLAMA_OPTIONS = {
+    'keep_alive': '-1',
+    'num_thread': int(CURRENT_CONFIG["llm_threads"]),
+    'temperature': float(CURRENT_CONFIG["llm_temperature"]),
+    'top_k': 40,
+    'top_p': 0.9,
+}
 
 def _query_devices_safe():
     try:
@@ -747,7 +763,7 @@ class BotGUI:
              seconds of silence — giving a natural pause window.
         """
         MAX_WAIT_FOR_SPEECH = 8.0   # give up if no speech starts within 8 s
-        SILENCE_TO_STOP     = 1.5   # seconds of post-speech silence to cut off
+        SILENCE_TO_STOP     = float(CURRENT_CONFIG.get("silence_to_stop", 1.5))
         MAX_RECORD_TIME     = 30.0  # hard cap regardless
         MIN_SPEECH_SECS     = 0.3   # must capture at least this much speech
         CALIBRATION_SECS    = 0.3   # how long to measure background noise
@@ -885,8 +901,10 @@ class BotGUI:
             return ""
 
         try:
+            lang    = CURRENT_CONFIG.get("whisper_language", "en")
+            threads = str(int(CURRENT_CONFIG.get("whisper_threads", 4)))
             result = subprocess.run(
-                [WHISPER_BIN, "-m", WHISPER_MODEL, "-l", "en", "-t", "4", "-f", filename],
+                [WHISPER_BIN, "-m", WHISPER_MODEL, "-l", lang, "-t", threads, "-f", filename],
                 capture_output=True, text=True, timeout=60
             )
 
