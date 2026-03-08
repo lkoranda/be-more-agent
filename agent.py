@@ -710,6 +710,14 @@ class BotGUI:
         if not buffer: return None
         audio_data = np.concatenate(buffer, axis=0).flatten()
         audio_data = np.nan_to_num(audio_data, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Resample to 16kHz — whisper.cpp requires 16kHz input
+        TARGET_RATE = 16000
+        if samplerate != TARGET_RATE:
+            num_samples = int(len(audio_data) * (TARGET_RATE / samplerate))
+            audio_data = scipy.signal.resample(audio_data, num_samples)
+            samplerate = TARGET_RATE
+
         audio_data = (audio_data * 32767).astype(np.int16)
         with wave.open(filename, "wb") as wf:
             wf.setnchannels(1)
