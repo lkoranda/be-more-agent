@@ -44,7 +44,7 @@ from openwakeword.model import Model
 import ollama 
 
 # --- WEB SEARCH (Using your working import) ---
-from ddgs import DDGS 
+from duckduckgo_search import DDGS
 
 # =========================================================================
 # 1. CONFIGURATION & CONSTANTS
@@ -57,7 +57,6 @@ WAKE_WORD_MODEL = "./wakeword.onnx"
 WAKE_WORD_THRESHOLD = 0.5
 
 # HARDWARE SETTINGS
-INPUT_DEVICE_NAME = None 
 
 DEFAULT_CONFIG = {
     "text_model": "gemma3:1b",
@@ -65,7 +64,9 @@ DEFAULT_CONFIG = {
     "voice_model": "piper/en_GB-semaine-medium.onnx",
     "chat_memory": True,
     "camera_rotation": 0,
-    "system_prompt_extras": ""
+    "system_prompt_extras": "",
+    "input_device": None,
+    "input_sample_rate": None
 }
 
 # LLM SETTINGS
@@ -91,6 +92,64 @@ def load_config():
 CURRENT_CONFIG = load_config()
 TEXT_MODEL = CURRENT_CONFIG["text_model"]
 VISION_MODEL = CURRENT_CONFIG["vision_model"]
+
+def resolve_input_device(config):
+    """Resolve audio input device from config (index, name string, or None for default)."""
+    requested = config.get("input_device")
+    if requested in (None, "", "default"):
+        return None
+    try:
+        devices = sd.query_devices()
+    except Exception as e:
+        print(f"[AUDIO] Device query failed: {e}", flush=True)
+        return None
+    if isinstance(requested, int) or (isinstance(requested, str) and requested.isdigit()):
+        index = int(requested)
+        if 0 <= index < len(devices):
+            return index
+        print(f"[AUDIO] Input device index {index} not found, using default.", flush=True)
+        return None
+    requested_lower = str(requested).lower()
+    for idx, dev in enumerate(devices):
+        if dev.get("max_input_channels", 0) > 0 and requested_lower in dev.get("name", "").lower():
+            return idx
+    print(f"[AUDIO] Input device '{requested}' not found, using default.", flush=True)
+    return None
+
+
+def choose_input_samplerate(device, preferred=None):
+    """Probe and return a supported input sample rate for the given device."""
+    candidates = []
+    if preferred:
+        candidates.append(int(preferred))
+    try:
+        device_info = sd.query_devices(device)
+        if "default_samplerate" in device_info:
+            candidates.append(int(device_info["default_samplerate"]))
+    except Exception:
+        pass
+    candidates.extend([48000, 44100, 32000, 16000])
+    seen = set()
+    for rate in candidates:
+        if not rate or rate in seen:
+            continue
+        seen.add(rate)
+        try:
+            sd.check_input_settings(device=device, samplerate=rate, channels=1, dtype="int16")
+            return rate
+        except Exception:
+            continue
+    return 44100  # last-resort fallback
+
+
+INPUT_DEVICE_NAME = resolve_input_device(CURRENT_CONFIG)
+if INPUT_DEVICE_NAME is not None:
+    try:
+        _dev_info = sd.query_devices(INPUT_DEVICE_NAME)
+        print(f"[AUDIO] Using input device: {_dev_info.get('name', INPUT_DEVICE_NAME)}", flush=True)
+    except Exception:
+        print(f"[AUDIO] Using input device index: {INPUT_DEVICE_NAME}", flush=True)
+
 
 class BotStates:
     IDLE = "idle"             
@@ -492,8 +551,9 @@ class BotGUI:
     def detect_wake_word_or_ptt(self):
         self.set_state(BotStates.IDLE, "Waiting...")
         self.ptt_event.clear()
-        
-        if self.oww_model: self.oww_model.reset()
+
+        if self.oww_model:
+            self.oww_model.reset()
 
         if self.oww_model is None:
             self.ptt_event.wait()
@@ -502,44 +562,87 @@ class BotGUI:
 
         CHUNK_SIZE = 1280
         OWW_SAMPLE_RATE = 16000
-        
-        try:
-            device_info = sd.query_devices(kind='input')
-            native_rate = int(device_info['default_samplerate'])
-        except: native_rate = 48000
-            
-        use_resampling = (native_rate != OWW_SAMPLE_RATE)
-        input_rate = native_rate if use_resampling else OWW_SAMPLE_RATE
+
+        input_rate = choose_input_samplerate(INPUT_DEVICE_NAME, CURRENT_CONFIG.get("input_sample_rate"))
+        use_resampling = (input_rate != OWW_SAMPLE_RATE)
         input_chunk_size = int(CHUNK_SIZE * (input_rate / OWW_SAMPLE_RATE)) if use_resampling else CHUNK_SIZE
 
-        try:
-            with sd.InputStream(samplerate=input_rate, channels=1, dtype='int16', 
-                                blocksize=input_chunk_size, device=INPUT_DEVICE_NAME) as stream:
-                while True:
-                    if self.ptt_event.is_set():
-                        self.ptt_event.clear()
-                        return "PTT"
-                    
-                    rlist, _, _ = select.select([sys.stdin], [], [], 0.001)
-                    if rlist: 
-                        sys.stdin.readline()
-                        return "CLI" 
+        stream_kwargs = {
+            "samplerate": input_rate,
+            "channels": 1,
+            "dtype": "int16",
+            "blocksize": input_chunk_size,
+            "device": INPUT_DEVICE_NAME,
+        }
 
-                    data, _ = stream.read(input_chunk_size)
-                    audio_data = np.frombuffer(data, dtype=np.int16)
+        fallback_kwargs = {**stream_kwargs, "blocksize": 1024, "latency": "high"}
 
-                    if use_resampling:
-                         audio_data = scipy.signal.resample(audio_data, CHUNK_SIZE).astype(np.int16)
+        for attempt, kwargs in enumerate([stream_kwargs, fallback_kwargs]):
+            try:
+                result = self._wake_word_listen_loop(kwargs, CHUNK_SIZE, use_resampling or attempt > 0)
+                if result is not None:
+                    return result  # "PTT" or "CLI"
+                return "WAKE"
+            except Exception as e:
+                if attempt == 0:
+                    print(f"[AUDIO] Wake word stream failed: {e}. Retrying with fallback settings...", flush=True)
+                else:
+                    print(f"[CRITICAL] Wake word stream error: {e}. Falling back to PTT.", flush=True)
+                    self.ptt_event.wait()
+                    return "PTT"
+        return "PTT"
 
-                    prediction = self.oww_model.predict(audio_data)
-                    for mdl in self.oww_model.prediction_buffer.keys():
-                        if list(self.oww_model.prediction_buffer[mdl])[-1] > WAKE_WORD_THRESHOLD:
-                            self.oww_model.reset() 
-                            return "WAKE"
-        except Exception as e:
-            print(f"Wake Word Stream Error: {e}")
-            self.ptt_event.wait()
-            return "PTT"
+    def _wake_word_listen_loop(self, stream_kwargs, target_chunk_size, use_resampling):
+        """
+        Inner wake word listen loop.
+        Returns "PTT", "CLI", or None (None means wake word triggered).
+        Raises on unrecoverable stream error so caller can retry with fallback settings.
+        """
+        MAX_CONSECUTIVE_OVERFLOWS = 5
+        overflow_count = 0
+
+        with sd.InputStream(**stream_kwargs) as stream:
+            while True:
+                if self.ptt_event.is_set():
+                    self.ptt_event.clear()
+                    return "PTT"
+
+                rlist, _, _ = select.select([sys.stdin], [], [], 0.001)
+                if rlist:
+                    sys.stdin.readline()
+                    return "CLI"
+
+                read_size = stream_kwargs.get("blocksize") or target_chunk_size
+                data, overflow = stream.read(read_size)
+
+                if overflow:
+                    overflow_count += 1
+                    if overflow_count >= MAX_CONSECUTIVE_OVERFLOWS:
+                        raise RuntimeError(f"Audio buffer overflowed {overflow_count} consecutive times")
+                else:
+                    overflow_count = 0
+
+                audio_data = np.frombuffer(data, dtype=np.int16)
+                if audio_data.ndim > 1:
+                    audio_data = audio_data.flatten()
+
+                if use_resampling and len(audio_data) > 0:
+                    # Nearest-neighbor resampling: fast, avoids CPU bottleneck on Pi5
+                    step = len(audio_data) / target_chunk_size
+                    indices = np.arange(0, len(audio_data), step)[:target_chunk_size].astype(int)
+                    audio_data = audio_data[indices]
+
+                # Skip prediction on silence to save CPU
+                if np.max(np.abs(audio_data)) < 200:
+                    continue
+
+                prediction = self.oww_model.predict(audio_data)
+                for mdl in self.oww_model.prediction_buffer.keys():
+                    score = list(self.oww_model.prediction_buffer[mdl])[-1]
+                    if score > WAKE_WORD_THRESHOLD:
+                        print(f"[WAKE] Triggered on '{mdl}' with score: {score:.2f}", flush=True)
+                        self.oww_model.reset()
+                        return None  # Wake word triggered
 
     def record_voice_adaptive(self, filename="input.wav"):
         print("Recording (Adaptive)...", flush=True)
