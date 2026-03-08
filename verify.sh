@@ -250,8 +250,9 @@ try:
     wav_rate = rate
     if rate != 16000:
         if HAS_SCIPY:
-            n = int(len(flat) * 16000 / rate)
-            wav_data = _sig.resample(flat, n).astype(np.int16)
+            from math import gcd
+            g = gcd(rate, 16000)
+            wav_data = _sig.resample_poly(flat, 16000 // g, rate // g).astype(np.int16)
         else:
             step = rate / 16000
             idx  = np.arange(0, len(flat), step).astype(int)

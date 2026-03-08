@@ -807,10 +807,12 @@ class BotGUI:
         print(f"[AUDIO] Captured {duration:.1f}s at {samplerate}Hz, peak={peak:.4f}", flush=True)
 
         # Resample to 16kHz — whisper.cpp requires 16kHz input
+        # resample_poly uses polyphase FIR with antialiasing: much better quality than resample()
         TARGET_RATE = 16000
         if samplerate != TARGET_RATE:
-            num_samples = int(len(audio_data) * (TARGET_RATE / samplerate))
-            audio_data = scipy.signal.resample(audio_data, num_samples)
+            from math import gcd
+            g = gcd(samplerate, TARGET_RATE)
+            audio_data = scipy.signal.resample_poly(audio_data, TARGET_RATE // g, samplerate // g)
             print(f"[AUDIO] Resampled {samplerate}Hz → {TARGET_RATE}Hz ({len(audio_data)} samples)", flush=True)
             samplerate = TARGET_RATE
 
@@ -851,18 +853,25 @@ class BotGUI:
 
             # Some whisper.cpp builds write transcription to stderr; check both
             output = (result.stdout + result.stderr).strip()
-            transcription_lines = output.split('\n')
 
-            transcription = ""
-            if transcription_lines and transcription_lines[-1].strip():
-                last_line = transcription_lines[-1].strip()
-                if ']' in last_line:
-                    transcription = last_line.split("]")[1].strip()
-                else:
-                    transcription = last_line
+            # Collect text from ALL timestamped lines e.g. "[00:00:00 --> 00:00:03]  hello there"
+            parts = []
+            for line in output.split('\n'):
+                line = line.strip()
+                if ']' in line:
+                    text = line.split(']', 1)[-1].strip()
+                    if text:
+                        parts.append(text)
+            transcription = ' '.join(parts).strip()
+
+            # Fallback: last non-empty line (some builds omit timestamps)
+            if not transcription:
+                transcription = next(
+                    (l.strip() for l in reversed(output.split('\n')) if l.strip()), ""
+                )
 
             print(f"Heard: '{transcription}'", flush=True)
-            return transcription.strip()
+            return transcription
 
         except subprocess.TimeoutExpired:
             print("[ERROR] Whisper timed out after 60 seconds.", flush=True)
