@@ -1047,6 +1047,7 @@ class BotGUI:
         threading.Thread(target=self._run_thinking_sound_loop, daemon=True).start()
 
         full_response_buffer = ""
+        clean_response_buffer = ""  # full_response_buffer minus any <think> content
         sentence_buffer = ""
 
         try:
@@ -1083,6 +1084,7 @@ class BotGUI:
                 content = raw
                 if not content:
                     continue
+                clean_response_buffer += content
                 # ──────────────────────────────────────────────────────────
 
                 if '{"' in content or "action:" in content.lower():
@@ -1111,6 +1113,12 @@ class BotGUI:
                     if clean_sentence and re.search(r'[a-zA-Z0-9]', clean_sentence):
                         with self.tts_queue_lock: self.tts_queue.append(clean_sentence)
                     sentence_buffer = ""
+
+            # Flush any content left in the buffer after the stream ends.
+            # This handles responses that don't end with sentence-ending punctuation.
+            if sentence_buffer.strip() and re.search(r'[a-zA-Z0-9]', sentence_buffer):
+                with self.tts_queue_lock: self.tts_queue.append(sentence_buffer.strip())
+                sentence_buffer = ""
 
             if is_action_mode:
                 action_data = self.extract_json_from_text(full_response_buffer)
@@ -1180,7 +1188,9 @@ class BotGUI:
                         self.session_memory.append({"role": "assistant", "content": final_text})
             else:
                 self.append_to_text("")
-                self.session_memory.append({"role": "assistant", "content": full_response_buffer}) 
+                # Save clean response (no <think> blocks) so the context sent on
+                # the next turn doesn't grow with thousands of reasoning tokens.
+                self.session_memory.append({"role": "assistant", "content": clean_response_buffer})
             
             self.wait_for_tts()
             self.set_state(BotStates.IDLE, "Ready")
