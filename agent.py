@@ -640,6 +640,24 @@ class BotGUI:
 
     def warm_up_logic(self):
         self.set_state(BotStates.WARMUP, "Warming up brains...")
+
+        whisper_model_name = CURRENT_CONFIG.get("whisper_model", "base.en")
+        print("", flush=True)
+        print("┌─────────────────────────────────────────────┐", flush=True)
+        print("│              Be More Agent                  │", flush=True)
+        print("├─────────────────────────────────────────────┤", flush=True)
+        print(f"│  LLM (text)   : {TEXT_MODEL:<28} │", flush=True)
+        print(f"│  LLM (vision) : {VISION_MODEL:<28} │", flush=True)
+        print(f"│  Voice (TTS)  : {CURRENT_CONFIG.get('voice_model',''):<28} │", flush=True)
+        print(f"│  Wake word    : {WAKE_WORD_MODEL:<28} │", flush=True)
+        print(f"│  STT model    : {whisper_model_name:<28} │", flush=True)
+        print(f"│  STT language : {CURRENT_CONFIG.get('whisper_language','en'):<28} │", flush=True)
+        print(f"│  Thinking mode: {'on' if CURRENT_CONFIG.get('thinking_mode', False) else 'off':<28} │", flush=True)
+        print(f"│  Audio input  : {_device_label(INPUT_DEVICE_NAME):<28} │", flush=True)
+        print(f"│  Audio output : {_device_label(OUTPUT_DEVICE_NAME):<28} │", flush=True)
+        print("└─────────────────────────────────────────────┘", flush=True)
+        print("", flush=True)
+
         try:
             ollama.generate(model=TEXT_MODEL, prompt="", keep_alive=-1)
         except Exception as e:
