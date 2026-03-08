@@ -233,8 +233,9 @@ class BotGUI:
         self.tts_queue_lock = threading.Lock() 
         self.tts_thread = None       
         self.tts_active = threading.Event()
-        self.current_audio_process = None 
-        
+        self.current_audio_process = None
+        self.exiting = False
+
         # --- WAKE WORD INITIALIZATION ---
         print("[INIT] Loading Wake Word...", flush=True)
         self.oww_model = None
@@ -285,6 +286,9 @@ class BotGUI:
         except: return None
 
     def safe_exit(self):
+        if self.exiting:
+            return
+        self.exiting = True
         print("\n--- SHUTDOWN SEQUENCE ---", flush=True)
         if self.current_audio_process:
             try:
@@ -294,16 +298,23 @@ class BotGUI:
 
         self.recording_active.clear()
         self.thinking_sound_active.clear()
-        self.tts_active.clear() 
-        
+        self.tts_active.clear()
+
         self.save_chat_history()
-        
+
         try:
             ollama.generate(model=TEXT_MODEL, prompt="", keep_alive=0)
         except: pass
 
-        self.master.quit()
-        sys.exit(0) 
+        try:
+            sd.stop()
+        except: pass
+
+        try:
+            self.master.quit()
+        except Exception: pass
+
+        sys.exit(0)
         
     def exit_fullscreen(self, event=None):
         self.master.attributes('-fullscreen', False)
