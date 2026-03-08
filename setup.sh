@@ -27,27 +27,38 @@ mkdir -p faces/idle faces/listening faces/thinking faces/speaking faces/error fa
 echo -e "${YELLOW}[3/8] Setting up Piper TTS...${NC}"
 ARCH=$(uname -m)
 if [ "$ARCH" == "aarch64" ]; then
-    wget -O piper.tar.gz https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz
-    tar -xvf piper.tar.gz -C piper --strip-components=1
-    rm piper.tar.gz
-    if [ ! -f "piper/piper" ]; then
-        echo -e "${RED}❌ Piper binary not found after extraction. Aborting.${NC}"
-        exit 1
+    if [ -f "piper/piper" ]; then
+        echo -e "${GREEN}✓ Piper binary already installed, skipping download.${NC}"
+    else
+        wget -O piper.tar.gz https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz
+        tar -xvf piper.tar.gz -C piper --strip-components=1
+        rm piper.tar.gz
+        if [ ! -f "piper/piper" ]; then
+            echo -e "${RED}❌ Piper binary not found after extraction. Aborting.${NC}"
+            exit 1
+        fi
+        echo -e "${GREEN}✓ Piper binary installed at piper/piper${NC}"
     fi
-    echo -e "${GREEN}✓ Piper binary found at piper/piper${NC}"
 else
     echo -e "${YELLOW}⚠️  Not on Raspberry Pi (aarch64). Skipping Piper download.${NC}"
 fi
 
 # 4. Download Piper Voice Model
+# Use -s (non-empty size check) rather than -f so partially-downloaded files are re-fetched
 echo -e "${YELLOW}[4/8] Downloading Voice Model...${NC}"
 mkdir -p piper
-wget -nc -O piper/en_GB-semaine-medium.onnx \
-    https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/semaine/medium/en_GB-semaine-medium.onnx
-wget -nc -O piper/en_GB-semaine-medium.onnx.json \
-    https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/semaine/medium/en_GB-semaine-medium.onnx.json
-if [ ! -f "piper/en_GB-semaine-medium.onnx.json" ]; then
-    echo -e "${RED}❌ Voice model JSON not found. TTS will fail.${NC}"
+for MODEL_FILE in "en_GB-semaine-medium.onnx" "en_GB-semaine-medium.onnx.json"; do
+    DEST="piper/$MODEL_FILE"
+    if [ -s "$DEST" ]; then
+        echo -e "${GREEN}✓ $MODEL_FILE already present, skipping.${NC}"
+    else
+        echo -e "${YELLOW}  Downloading $MODEL_FILE...${NC}"
+        wget -O "$DEST" \
+            "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/semaine/medium/$MODEL_FILE"
+    fi
+done
+if [ ! -s "piper/en_GB-semaine-medium.onnx" ] || [ ! -s "piper/en_GB-semaine-medium.onnx.json" ]; then
+    echo -e "${RED}❌ Voice model files missing or empty after download. TTS will fail.${NC}"
     exit 1
 fi
 
@@ -90,26 +101,31 @@ fi
 
 # 8. Build whisper.cpp (THE key missing step — fixes empty transcription on all fresh installs)
 echo -e "${YELLOW}[8/8] Building whisper.cpp (Speech-to-Text engine)...${NC}"
-echo -e "${YELLOW}      This step takes 3-5 minutes on Raspberry Pi 5.${NC}"
 if [ ! -d "whisper.cpp" ]; then
     git clone https://github.com/ggerganov/whisper.cpp.git
 fi
 cd whisper.cpp
 
-# Use cmake (required by modern whisper.cpp releases)
-cmake -B build -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON
-cmake --build build --config Release -j$(nproc)
+if [ -f "build/bin/whisper-cli" ]; then
+    echo -e "${GREEN}✓ whisper-cli already built, skipping cmake build.${NC}"
+else
+    echo -e "${YELLOW}      Building whisper-cli — takes 3-5 minutes on Raspberry Pi 5...${NC}"
+    cmake -B build -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON
+    cmake --build build --config Release -j$(nproc)
+    if [ ! -f "build/bin/whisper-cli" ]; then
+        echo -e "${RED}❌ whisper-cli binary not found after build. Check build output above.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ whisper-cli built at whisper.cpp/build/bin/whisper-cli${NC}"
+fi
 
 mkdir -p models
-if [ ! -f "models/ggml-base.en.bin" ]; then
+if [ -s "models/ggml-base.en.bin" ]; then
+    echo -e "${GREEN}✓ Whisper model already present, skipping download.${NC}"
+else
     echo -e "${YELLOW}Downloading Whisper base English model (~142MB)...${NC}"
     bash models/download-ggml-model.sh base.en
 fi
-if [ ! -f "build/bin/whisper-cli" ]; then
-    echo -e "${RED}❌ whisper-cli binary not found after build. Check build output above.${NC}"
-    exit 1
-fi
-echo -e "${GREEN}✓ whisper-cli ready at whisper.cpp/build/bin/whisper-cli${NC}"
 cd ..
 
 echo ""
