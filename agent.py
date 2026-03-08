@@ -736,43 +736,87 @@ class BotGUI:
                         return None  # Wake word triggered
 
     def record_voice_adaptive(self, filename="input.wav"):
-        print("Recording (Adaptive)...", flush=True)
-        time.sleep(0.5)
+        """
+        Record until the user stops speaking.
+
+        Pipeline:
+          1. Calibrate noise floor (0.3 s of pre-speech audio).
+          2. Set speech threshold = max(0.03, noise_floor * 4).
+          3. Wait up to MAX_WAIT_FOR_SPEECH seconds for the user to start.
+          4. Once speech is detected, stop after SILENCE_TO_STOP consecutive
+             seconds of silence — giving a natural pause window.
+        """
+        MAX_WAIT_FOR_SPEECH = 8.0   # give up if no speech starts within 8 s
+        SILENCE_TO_STOP     = 1.5   # seconds of post-speech silence to cut off
+        MAX_RECORD_TIME     = 30.0  # hard cap regardless
+        MIN_SPEECH_SECS     = 0.3   # must capture at least this much speech
+        CALIBRATION_SECS    = 0.3   # how long to measure background noise
+        MIN_THRESHOLD       = 0.03  # absolute floor — handles very quiet rooms
+
         samplerate = choose_input_samplerate(INPUT_DEVICE_NAME, CURRENT_CONFIG.get("input_sample_rate"))
+        chunk_size = int(samplerate * 0.05)   # 50 ms chunks
+        chunk_dur  = chunk_size / samplerate
 
-        silence_threshold = 0.015
-        silence_duration = 1.5
-        max_record_time = 30.0
-        buffer = []
-        silent_chunks = 0
-        chunk_duration = 0.05 
-        chunk_size = int(samplerate * chunk_duration)
-        
-        num_silent_chunks = int(silence_duration / chunk_duration)
-        max_chunks = int(max_record_time / chunk_duration)
-        recorded_chunks = 0
-        silence_started = False
-
-        def callback(indata, frames, time_info, status):
-            nonlocal silent_chunks, recorded_chunks, silence_started
-            volume_norm = np.linalg.norm(indata) / np.sqrt(len(indata))
-            buffer.append(indata.copy())  
-            recorded_chunks += 1
-            if recorded_chunks < 5: return 
-            if volume_norm < silence_threshold:
-                silent_chunks += 1
-                if silent_chunks >= num_silent_chunks: silence_started = True
-            else: silent_chunks = 0
-
+        # ── Step 1: calibrate noise floor ─────────────────────────────────
         try:
             sd.stop()
-            time.sleep(0.2)
-            with sd.InputStream(samplerate=samplerate, channels=1, callback=callback,
-                                device=INPUT_DEVICE_NAME, blocksize=chunk_size):
-                while not silence_started and recorded_chunks < max_chunks:
-                    sd.sleep(int(chunk_duration * 1000))
+            time.sleep(0.1)
+            noise_data = sd.rec(int(samplerate * CALIBRATION_SECS),
+                                samplerate=samplerate, channels=1,
+                                dtype="float32", device=INPUT_DEVICE_NAME)
+            sd.wait()
+            noise_rms = float(np.sqrt(np.mean(noise_data ** 2)))
+        except Exception:
+            noise_rms = 0.005  # safe fallback
+
+        speech_threshold = max(MIN_THRESHOLD, noise_rms * 4.0)
+        print(f"[AUDIO] Noise RMS={noise_rms:.4f}  →  speech threshold={speech_threshold:.4f}", flush=True)
+
+        # ── Step 2: record with adaptive stop ─────────────────────────────
+        buffer         = []
+        speech_secs    = 0.0
+        silence_secs   = 0.0
+        speech_started = False
+        stop_event     = threading.Event()
+
+        def callback(indata, frames, time_info, status):
+            nonlocal speech_secs, silence_secs, speech_started
+            buffer.append(indata.copy())
+            rms = float(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
+            if rms >= speech_threshold:
+                speech_started = True
+                speech_secs   += chunk_dur
+                silence_secs   = 0.0
+            elif speech_started:
+                silence_secs += chunk_dur
+                if silence_secs >= SILENCE_TO_STOP and speech_secs >= MIN_SPEECH_SECS:
+                    stop_event.set()
+
+        try:
+            time.sleep(0.1)
+            start = time.time()
+            with sd.InputStream(samplerate=samplerate, channels=1, dtype="float32",
+                                callback=callback, device=INPUT_DEVICE_NAME,
+                                blocksize=chunk_size):
+                print("Recording (Adaptive) — speak now...", flush=True)
+                while not stop_event.is_set():
+                    elapsed = time.time() - start
+                    if elapsed >= MAX_RECORD_TIME:
+                        break
+                    if not speech_started and elapsed >= MAX_WAIT_FOR_SPEECH:
+                        print("[AUDIO] No speech detected within timeout.", flush=True)
+                        return None
+                    sd.sleep(50)
         except Exception as e:
             print(f"[AUDIO ERROR] Adaptive recording failed: {e}", flush=True)
+            return None
+
+        total = len(buffer) * chunk_dur
+        print(f"[AUDIO] Done — {total:.1f}s total, "
+              f"speech={speech_secs:.1f}s, post-speech silence={silence_secs:.1f}s", flush=True)
+
+        if not speech_started:
+            print("[AUDIO] No speech captured.", flush=True)
             return None
 
         return self.save_audio_buffer(buffer, filename, samplerate)
