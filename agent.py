@@ -312,10 +312,11 @@ class BotGUI:
         self.session_memory = []
         self.thinking_sound_active = threading.Event()
         
-        self.last_ptt_time = 0 
-        self.ptt_event = threading.Event()       
-        self.recording_active = threading.Event() 
-        self.interrupted = threading.Event() 
+        self.last_ptt_time = 0
+        self.ptt_event = threading.Event()
+        self.recording_active = threading.Event()
+        self.interrupted = threading.Event()
+        self._wake_noise_rms = None   # pre-calibrated by wake word loop
         
         self.tts_queue = []          
         self.tts_queue_lock = threading.Lock() 
@@ -728,6 +729,9 @@ class BotGUI:
         MAX_CONSECUTIVE_OVERFLOWS = 5
         overflow_count = 0
         _debug_tick = 0
+        # Noise floor accumulation — used to skip calibration in record_voice_adaptive
+        _noise_sum   = 0.0
+        _noise_count = 0
 
         print(f"[WAKE] Listening on device={stream_kwargs.get('device')} "
               f"rate={stream_kwargs['samplerate']} blocksize={stream_kwargs.get('blocksize')}", flush=True)
@@ -769,6 +773,11 @@ class BotGUI:
                     bar = "#" * min(40, peak // 200)
                     print(f"[MIC] peak={peak:5d} |{bar:<40}|", flush=True)
 
+                # Accumulate noise floor on quiet chunks (peak well below speech level)
+                if peak < 500 and len(audio_data) > 0:
+                    _noise_sum   += float(np.sqrt(np.mean(audio_data.astype(np.float64) ** 2)))
+                    _noise_count += 1
+
                 # Skip prediction on silence to save CPU
                 if peak < 200:
                     continue
@@ -779,6 +788,9 @@ class BotGUI:
                     if score > WAKE_WORD_THRESHOLD:
                         print(f"[WAKE] Triggered on '{mdl}' with score: {score:.2f}", flush=True)
                         self.oww_model.reset()
+                        # Store pre-calibrated noise floor (convert int16 RMS → float32 scale)
+                        if _noise_count >= 10:
+                            self._wake_noise_rms = (_noise_sum / _noise_count) / 32768.0
                         return None  # Wake word triggered
 
     def record_voice_adaptive(self, filename="input.wav"):
@@ -803,20 +815,25 @@ class BotGUI:
         chunk_size = int(samplerate * 0.05)   # 50 ms chunks
         chunk_dur  = chunk_size / samplerate
 
-        # ── Step 1: calibrate noise floor ─────────────────────────────────
-        try:
-            sd.stop()
-            time.sleep(0.1)
-            noise_data = sd.rec(int(samplerate * CALIBRATION_SECS),
-                                samplerate=samplerate, channels=1,
-                                dtype="float32", device=INPUT_DEVICE_NAME)
-            sd.wait()
-            noise_rms = float(np.sqrt(np.mean(noise_data ** 2)))
-        except Exception:
-            noise_rms = 0.005  # safe fallback
+        # ── Step 1: noise floor — use pre-calibrated value from wake word loop ──
+        sd.stop()
+        time.sleep(0.1)
+        if self._wake_noise_rms is not None:
+            noise_rms = self._wake_noise_rms
+            self._wake_noise_rms = None
+            print(f"[AUDIO] Pre-calibrated noise RMS={noise_rms:.4f}", flush=True)
+        else:
+            try:
+                noise_data = sd.rec(int(samplerate * CALIBRATION_SECS),
+                                    samplerate=samplerate, channels=1,
+                                    dtype="float32", device=INPUT_DEVICE_NAME)
+                sd.wait()
+                noise_rms = float(np.sqrt(np.mean(noise_data ** 2)))
+            except Exception:
+                noise_rms = 0.005  # safe fallback
 
         speech_threshold = max(MIN_THRESHOLD, noise_rms * 4.0)
-        print(f"[AUDIO] Noise RMS={noise_rms:.4f}  →  speech threshold={speech_threshold:.4f}", flush=True)
+        print(f"[AUDIO] speech threshold={speech_threshold:.4f}", flush=True)
 
         # ── Step 2: record with adaptive stop ─────────────────────────────
         buffer         = []
@@ -839,7 +856,6 @@ class BotGUI:
                     stop_event.set()
 
         try:
-            time.sleep(0.1)
             start = time.time()
             with sd.InputStream(samplerate=samplerate, channels=1, dtype="float32",
                                 callback=callback, device=INPUT_DEVICE_NAME,
