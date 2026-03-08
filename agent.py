@@ -997,10 +997,13 @@ class BotGUI:
 
         thinking_mode = CURRENT_CONFIG.get("thinking_mode", False)
 
-        # Build user content — prepend /no_think when thinking is off.
-        # Works as a prompt-level instruction (reliable across all Ollama versions)
-        # in addition to the think: false option (works on newer Ollama).
-        effective_text = text if thinking_mode else f"/no_think {text}"
+        # Qwen3/3.5 thinking-mode suppression — only applied to models that support it.
+        # Passing think:false or /no_think to gemma/llama/phi causes Ollama to stall.
+        is_qwen = "qwen" in model_to_use.lower()
+        if is_qwen and not thinking_mode:
+            effective_text = f"/no_think {text}"
+        else:
+            effective_text = text
 
         messages = []
         if img_path:
@@ -1009,9 +1012,9 @@ class BotGUI:
             user_msg = {"role": "user", "content": effective_text}
             messages = self.permanent_memory + self.session_memory + [user_msg]
 
-        # Ollama native think parameter + prompt-level /no_think = belt and braces
         call_options = dict(OLLAMA_OPTIONS)
-        call_options["think"] = bool(thinking_mode)
+        if is_qwen:
+            call_options["think"] = bool(thinking_mode)
         print(f"[LLM] model={model_to_use} thinking={thinking_mode}", flush=True)
 
         self.thinking_sound_active.set()
