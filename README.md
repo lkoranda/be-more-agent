@@ -162,6 +162,59 @@ This software is a generic framework. You can give it a new personality by repla
 
 ---
 
+## 🧠 Recommended Models (Raspberry Pi 5)
+
+The default models are conservative. If you have a **Pi 5 with 8–16 GB RAM**, better options are available. All models below run via Ollama with no internet connection after download.
+
+### Text / Conversation models
+
+| Model | RAM | Speed (tok/s) | Notes |
+|-------|-----|---------------|-------|
+| `gemma3:1b` | ~1 GB | ~8–12 | Default — fast, limited reasoning |
+| `gemma3:4b` | ~3 GB | ~3–5 | Good upgrade, natural conversation |
+| `llama3.2:3b` | ~2 GB | ~4–6 | Solid alternative to gemma3:4b |
+| `qwen3.5:2b` | ~2.5 GB | ~10–12 | Excellent for size, natively multimodal |
+| `qwen3.5:4b` | ~3.4 GB | ~6–8 | **Recommended** — strong reasoning, vision built-in |
+| `qwen3.5:9b` | ~6.6 GB | ~3–4 | Best quality that fits in 16 GB |
+| `gemma3:12b` | ~8 GB | ~1–2 | Good quality but responses feel slow |
+
+> **Pi 5 16 GB sweet spot:** `qwen3.5:4b` or `qwen3.5:9b`
+
+### Vision models
+
+| Model | RAM | Notes |
+|-------|-----|-------|
+| `moondream` | ~1.7 GB | Default — lightweight, fast, good for basic scene description |
+| `qwen3.5:4b` | ~3.4 GB | Natively multimodal — can replace both `text_model` and `vision_model` |
+| `qwen3.5:9b` | ~6.6 GB | Best vision quality that comfortably fits in 16 GB |
+
+### Qwen3.5 as a single model for text + vision
+
+All Qwen3.5 models have vision built into the weights (early fusion multimodal). You can point both `text_model` and `vision_model` at the same model to simplify your setup:
+
+```json
+{
+    "text_model":   "qwen3.5:4b",
+    "vision_model": "qwen3.5:4b"
+}
+```
+
+This uses one model for everything and avoids loading moondream separately.
+
+### What about qwen3.5:35b-a3b?
+
+The 35B MoE model activates only ~3B parameters per token (very fast inference), but all 35B weights still need to fit in RAM. At Q4 quantization that is **~22–24 GB** — it does not fit in 16 GB. You would need a Pi 5 with 16 GB + swap or a different device. Stick with 9b on 16 GB.
+
+### Pull a model
+
+```bash
+ollama pull qwen3.5:4b
+# or
+ollama pull qwen3.5:9b
+```
+
+---
+
 ## ⚠️ Troubleshooting
 
 * **"No search library found":** If web search fails, ensure you are in the virtual environment and `duckduckgo-search` is installed via pip.
