@@ -62,13 +62,8 @@ pip install --upgrade pip
 # Force rebuild sounddevice against the newly installed PortAudio dev headers
 pip install --force-reinstall --no-cache-dir sounddevice
 
-# Architecture-specific onnxruntime (avoids 30+ min compile on Pi5)
-if [ "$ARCH" == "aarch64" ]; then
-    echo -e "${YELLOW}Installing onnxruntime for aarch64 via piwheels...${NC}"
-    pip install -i https://www.piwheels.org/simple onnxruntime
-else
-    pip install onnxruntime
-fi
+# onnxruntime — PyPI has aarch64 wheels since v1.16, installs directly on Pi5
+pip install onnxruntime
 
 pip install -r requirements.txt
 
