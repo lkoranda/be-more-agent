@@ -44,7 +44,7 @@ from openwakeword.model import Model
 import ollama 
 
 # --- WEB SEARCH (Using your working import) ---
-from ddgs import DDGS 
+from duckduckgo_search import DDGS
 
 # =========================================================================
 # 1. CONFIGURATION & CONSTANTS
@@ -53,28 +53,38 @@ from ddgs import DDGS
 CONFIG_FILE = "config.json"
 MEMORY_FILE = "memory.json"
 BMO_IMAGE_FILE = "current_image.jpg"
-WAKE_WORD_MODEL = "./wakeword.onnx"
-WAKE_WORD_THRESHOLD = 0.5
+# Resolved after config is loaded — see below DEFAULT_CONFIG block
+WAKE_WORD_MODEL     = None
+WAKE_WORD_THRESHOLD = None
 
 # HARDWARE SETTINGS
-INPUT_DEVICE_NAME = None 
 
 DEFAULT_CONFIG = {
-    "text_model": "gemma3:1b",
-    "vision_model": "moondream",
-    "voice_model": "piper/en_GB-semaine-medium.onnx",
-    "chat_memory": True,
-    "camera_rotation": 0,
-    "system_prompt_extras": ""
-}
-
-# LLM SETTINGS
-OLLAMA_OPTIONS = {
-    'keep_alive': '-1',     
-    'num_thread': 4,
-    'temperature': 0.7,     
-    'top_k': 40,
-    'top_p': 0.9
+    # Models
+    "text_model":           "gemma3:1b",
+    "vision_model":         "moondream",
+    "voice_model":          "piper/en_GB-semaine-medium.onnx",
+    # Personality
+    "system_prompt_extras": "",
+    "chat_memory":          True,
+    # Wake word
+    "wake_word_model":      "./wakeword.onnx",
+    "wake_word_threshold":  0.5,    # 0.3 = more sensitive, 0.7 = stricter
+    # Recording
+    "silence_to_stop":      1.5,    # seconds of post-speech silence before cutting off
+    # Transcription
+    "whisper_model":        "base.en",  # tiny.en = ~2x faster, slightly less accurate
+    "whisper_language":     "en",       # language code: en, de, fr, es, ...
+    "whisper_threads":      4,
+    # LLM
+    "llm_temperature":      0.7,
+    "llm_threads":          4,
+    "thinking_mode":        False,  # Qwen3/3.5: True = reasoning before answer, False = faster direct response
+    # Hardware
+    "camera_rotation":      0,
+    "input_device":         None,
+    "input_sample_rate":    None,
+    "output_device":        None,
 }
 
 def load_config():
@@ -89,8 +99,145 @@ def load_config():
     return config
 
 CURRENT_CONFIG = load_config()
-TEXT_MODEL = CURRENT_CONFIG["text_model"]
-VISION_MODEL = CURRENT_CONFIG["vision_model"]
+TEXT_MODEL          = CURRENT_CONFIG["text_model"]
+VISION_MODEL        = CURRENT_CONFIG["vision_model"]
+WAKE_WORD_MODEL     = CURRENT_CONFIG["wake_word_model"]
+WAKE_WORD_THRESHOLD = float(CURRENT_CONFIG["wake_word_threshold"])
+
+OLLAMA_OPTIONS = {
+    'keep_alive': '-1',
+    'num_thread': int(CURRENT_CONFIG["llm_threads"]),
+    'temperature': float(CURRENT_CONFIG["llm_temperature"]),
+    'top_k': 40,
+    'top_p': 0.9,
+}
+
+def _query_devices_safe():
+    try:
+        return list(sd.query_devices())
+    except Exception as e:
+        print(f"[AUDIO] Device query failed: {e}", flush=True)
+        return []
+
+
+def find_usb_audio_device(kind="input"):
+    """Return the index of the first USB audio device for the given kind ('input'/'output'), or None."""
+    ch_key = "max_input_channels" if kind == "input" else "max_output_channels"
+    for idx, dev in enumerate(_query_devices_safe()):
+        if dev.get(ch_key, 0) > 0 and "usb" in dev.get("name", "").lower():
+            return idx
+    return None
+
+
+def print_audio_devices(input_idx, output_idx):
+    """Print a table of all audio devices, highlighting the selected ones."""
+    devices = _query_devices_safe()
+    if not devices:
+        return
+    print("[AUDIO] Available devices:", flush=True)
+    for idx, dev in enumerate(devices):
+        ic = dev.get("max_input_channels", 0)
+        oc = dev.get("max_output_channels", 0)
+        tags = ""
+        if idx == input_idx:
+            tags += "  <-- INPUT"
+        if idx == output_idx:
+            tags += "  <-- OUTPUT"
+        print(f"  [{idx:2d}] {dev['name']:<40} IN:{ic}  OUT:{oc}{tags}", flush=True)
+
+
+def resolve_input_device(config):
+    """Resolve audio input device: explicit config > USB auto-detect > system default."""
+    requested = config.get("input_device")
+    devices = _query_devices_safe()
+
+    if requested not in (None, "", "default"):
+        if isinstance(requested, int) or (isinstance(requested, str) and requested.isdigit()):
+            index = int(requested)
+            if 0 <= index < len(devices):
+                return index
+            print(f"[AUDIO] Input device index {index} out of range, falling back to USB auto-detect.", flush=True)
+        else:
+            requested_lower = str(requested).lower()
+            for idx, dev in enumerate(devices):
+                if dev.get("max_input_channels", 0) > 0 and requested_lower in dev.get("name", "").lower():
+                    return idx
+            print(f"[AUDIO] Input device '{requested}' not found, falling back to USB auto-detect.", flush=True)
+
+    # Auto-detect USB microphone
+    usb = find_usb_audio_device("input")
+    if usb is not None:
+        return usb
+
+    return None  # system default
+
+
+def resolve_output_device(config):
+    """Resolve audio output device: explicit config > USB auto-detect > system default."""
+    requested = config.get("output_device")
+    devices = _query_devices_safe()
+
+    if requested not in (None, "", "default"):
+        if isinstance(requested, int) or (isinstance(requested, str) and requested.isdigit()):
+            index = int(requested)
+            if 0 <= index < len(devices):
+                return index
+            print(f"[AUDIO] Output device index {index} out of range, falling back to USB auto-detect.", flush=True)
+        else:
+            requested_lower = str(requested).lower()
+            for idx, dev in enumerate(devices):
+                if dev.get("max_output_channels", 0) > 0 and requested_lower in dev.get("name", "").lower():
+                    return idx
+            print(f"[AUDIO] Output device '{requested}' not found, falling back to USB auto-detect.", flush=True)
+
+    # Auto-detect USB speaker
+    usb = find_usb_audio_device("output")
+    if usb is not None:
+        return usb
+
+    return None  # system default
+
+
+def choose_input_samplerate(device, preferred=None):
+    """Probe and return a supported input sample rate for the given device."""
+    candidates = []
+    if preferred:
+        candidates.append(int(preferred))
+    try:
+        device_info = sd.query_devices(device)
+        if "default_samplerate" in device_info:
+            candidates.append(int(device_info["default_samplerate"]))
+    except Exception:
+        pass
+    candidates.extend([48000, 44100, 32000, 16000])
+    seen = set()
+    for rate in candidates:
+        if not rate or rate in seen:
+            continue
+        seen.add(rate)
+        try:
+            sd.check_input_settings(device=device, samplerate=rate, channels=1, dtype="int16")
+            return rate
+        except Exception:
+            continue
+    return 44100  # last-resort fallback
+
+
+INPUT_DEVICE_NAME = resolve_input_device(CURRENT_CONFIG)
+OUTPUT_DEVICE_NAME = resolve_output_device(CURRENT_CONFIG)
+print_audio_devices(INPUT_DEVICE_NAME, OUTPUT_DEVICE_NAME)
+
+def _device_label(idx):
+    if idx is None:
+        return "system default"
+    try:
+        return sd.query_devices(idx)["name"]
+    except Exception:
+        return str(idx)
+
+print(f"[AUDIO] Input  → {_device_label(INPUT_DEVICE_NAME)}", flush=True)
+print(f"[AUDIO] Output → {_device_label(OUTPUT_DEVICE_NAME)}", flush=True)
+
 
 class BotStates:
     IDLE = "idle"             
@@ -165,17 +312,19 @@ class BotGUI:
         self.session_memory = []
         self.thinking_sound_active = threading.Event()
         
-        self.last_ptt_time = 0 
-        self.ptt_event = threading.Event()       
-        self.recording_active = threading.Event() 
-        self.interrupted = threading.Event() 
+        self.last_ptt_time = 0
+        self.ptt_event = threading.Event()
+        self.recording_active = threading.Event()
+        self.interrupted = threading.Event()
+        self._wake_noise_rms = None   # pre-calibrated by wake word loop
         
         self.tts_queue = []          
         self.tts_queue_lock = threading.Lock() 
         self.tts_thread = None       
         self.tts_active = threading.Event()
-        self.current_audio_process = None 
-        
+        self.current_audio_process = None
+        self.exiting = False
+
         # --- WAKE WORD INITIALIZATION ---
         print("[INIT] Loading Wake Word...", flush=True)
         self.oww_model = None
@@ -226,6 +375,9 @@ class BotGUI:
         except: return None
 
     def safe_exit(self):
+        if self.exiting:
+            return
+        self.exiting = True
         print("\n--- SHUTDOWN SEQUENCE ---", flush=True)
         if self.current_audio_process:
             try:
@@ -235,16 +387,23 @@ class BotGUI:
 
         self.recording_active.clear()
         self.thinking_sound_active.clear()
-        self.tts_active.clear() 
-        
+        self.tts_active.clear()
+
         self.save_chat_history()
-        
+
         try:
             ollama.generate(model=TEXT_MODEL, prompt="", keep_alive=0)
         except: pass
 
-        self.master.quit()
-        sys.exit(0) 
+        try:
+            sd.stop()
+        except: pass
+
+        try:
+            self.master.quit()
+        except Exception: pass
+
+        sys.exit(0)
         
     def exit_fullscreen(self, event=None):
         self.master.attributes('-fullscreen', False)
@@ -482,6 +641,34 @@ class BotGUI:
 
     def warm_up_logic(self):
         self.set_state(BotStates.WARMUP, "Warming up brains...")
+
+        whisper_model_name = CURRENT_CONFIG.get("whisper_model", "base.en")
+
+        rows = [
+            ("LLM (text)",    TEXT_MODEL),
+            ("LLM (vision)",  VISION_MODEL),
+            ("Voice (TTS)",   os.path.basename(CURRENT_CONFIG.get("voice_model", ""))),
+            ("Wake word",     os.path.basename(WAKE_WORD_MODEL)),
+            ("STT model",     whisper_model_name),
+            ("STT language",  CURRENT_CONFIG.get("whisper_language", "en")),
+            ("Thinking mode", "on" if CURRENT_CONFIG.get("thinking_mode", False) else "off"),
+            ("Audio input",   _device_label(INPUT_DEVICE_NAME)),
+            ("Audio output",  _device_label(OUTPUT_DEVICE_NAME)),
+        ]
+        LABEL_W = max(len(r[0]) for r in rows)
+        VAL_W   = max(max(len(r[1]) for r in rows), 20)
+        INNER_W = 2 + LABEL_W + 3 + VAL_W + 1
+        title   = "Be More Agent".center(INNER_W)
+        bar     = "─" * INNER_W
+        print("", flush=True)
+        print(f"┌{bar}┐", flush=True)
+        print(f"│{title}│", flush=True)
+        print(f"├{bar}┤", flush=True)
+        for label, value in rows:
+            print(f"│  {label:<{LABEL_W}} : {value:<{VAL_W}} │", flush=True)
+        print(f"└{bar}┘", flush=True)
+        print("", flush=True)
+
         try:
             ollama.generate(model=TEXT_MODEL, prompt="", keep_alive=-1)
         except Exception as e:
@@ -492,8 +679,9 @@ class BotGUI:
     def detect_wake_word_or_ptt(self):
         self.set_state(BotStates.IDLE, "Waiting...")
         self.ptt_event.clear()
-        
-        if self.oww_model: self.oww_model.reset()
+
+        if self.oww_model:
+            self.oww_model.reset()
 
         if self.oww_model is None:
             self.ptt_event.wait()
@@ -502,101 +690,216 @@ class BotGUI:
 
         CHUNK_SIZE = 1280
         OWW_SAMPLE_RATE = 16000
-        
-        try:
-            device_info = sd.query_devices(kind='input')
-            native_rate = int(device_info['default_samplerate'])
-        except: native_rate = 48000
-            
-        use_resampling = (native_rate != OWW_SAMPLE_RATE)
-        input_rate = native_rate if use_resampling else OWW_SAMPLE_RATE
+
+        input_rate = choose_input_samplerate(INPUT_DEVICE_NAME, CURRENT_CONFIG.get("input_sample_rate"))
+        use_resampling = (input_rate != OWW_SAMPLE_RATE)
         input_chunk_size = int(CHUNK_SIZE * (input_rate / OWW_SAMPLE_RATE)) if use_resampling else CHUNK_SIZE
 
-        try:
-            with sd.InputStream(samplerate=input_rate, channels=1, dtype='int16', 
-                                blocksize=input_chunk_size, device=INPUT_DEVICE_NAME) as stream:
-                while True:
-                    if self.ptt_event.is_set():
-                        self.ptt_event.clear()
-                        return "PTT"
-                    
-                    rlist, _, _ = select.select([sys.stdin], [], [], 0.001)
-                    if rlist: 
-                        sys.stdin.readline()
-                        return "CLI" 
+        stream_kwargs = {
+            "samplerate": input_rate,
+            "channels": 1,
+            "dtype": "int16",
+            "blocksize": input_chunk_size,
+            "device": INPUT_DEVICE_NAME,
+        }
 
-                    data, _ = stream.read(input_chunk_size)
-                    audio_data = np.frombuffer(data, dtype=np.int16)
+        fallback_kwargs = {**stream_kwargs, "blocksize": 1024, "latency": "high"}
 
-                    if use_resampling:
-                         audio_data = scipy.signal.resample(audio_data, CHUNK_SIZE).astype(np.int16)
+        for attempt, kwargs in enumerate([stream_kwargs, fallback_kwargs]):
+            try:
+                result = self._wake_word_listen_loop(kwargs, CHUNK_SIZE, use_resampling or attempt > 0)
+                if result is not None:
+                    return result  # "PTT" or "CLI"
+                return "WAKE"
+            except Exception as e:
+                if attempt == 0:
+                    print(f"[AUDIO] Wake word stream failed: {e}. Retrying with fallback settings...", flush=True)
+                else:
+                    print(f"[CRITICAL] Wake word stream error: {e}. Falling back to PTT.", flush=True)
+                    self.ptt_event.wait()
+                    return "PTT"
+        return "PTT"
 
-                    prediction = self.oww_model.predict(audio_data)
-                    for mdl in self.oww_model.prediction_buffer.keys():
-                        if list(self.oww_model.prediction_buffer[mdl])[-1] > WAKE_WORD_THRESHOLD:
-                            self.oww_model.reset() 
-                            return "WAKE"
-        except Exception as e:
-            print(f"Wake Word Stream Error: {e}")
-            self.ptt_event.wait()
-            return "PTT"
+    def _wake_word_listen_loop(self, stream_kwargs, target_chunk_size, use_resampling):
+        """
+        Inner wake word listen loop.
+        Returns "PTT", "CLI", or None (None means wake word triggered).
+        Raises on unrecoverable stream error so caller can retry with fallback settings.
+        """
+        MAX_CONSECUTIVE_OVERFLOWS = 5
+        overflow_count = 0
+        _debug_tick = 0
+        # Noise floor accumulation — used to skip calibration in record_voice_adaptive
+        _noise_sum   = 0.0
+        _noise_count = 0
+
+        print(f"[WAKE] Listening on device={stream_kwargs.get('device')} "
+              f"rate={stream_kwargs['samplerate']} blocksize={stream_kwargs.get('blocksize')}", flush=True)
+
+        with sd.InputStream(**stream_kwargs) as stream:
+            while True:
+                if self.ptt_event.is_set():
+                    self.ptt_event.clear()
+                    return "PTT"
+
+                rlist, _, _ = select.select([sys.stdin], [], [], 0.001)
+                if rlist:
+                    sys.stdin.readline()
+                    return "CLI"
+
+                read_size = stream_kwargs.get("blocksize") or target_chunk_size
+                data, overflow = stream.read(read_size)
+
+                if overflow:
+                    overflow_count += 1
+                    if overflow_count >= MAX_CONSECUTIVE_OVERFLOWS:
+                        raise RuntimeError(f"Audio buffer overflowed {overflow_count} consecutive times")
+                else:
+                    overflow_count = 0
+
+                audio_data = np.frombuffer(data, dtype=np.int16)
+                if audio_data.ndim > 1:
+                    audio_data = audio_data.flatten()
+
+                if use_resampling and len(audio_data) > 0:
+                    # Nearest-neighbor resampling: fast, avoids CPU bottleneck on Pi5
+                    step = len(audio_data) / target_chunk_size
+                    indices = np.arange(0, len(audio_data), step)[:target_chunk_size].astype(int)
+                    audio_data = audio_data[indices]
+
+                peak = int(np.max(np.abs(audio_data))) if len(audio_data) > 0 else 0
+                _debug_tick += 1
+                if _debug_tick % 150 == 0:
+                    bar = "#" * min(40, peak // 200)
+                    print(f"[MIC] peak={peak:5d} |{bar:<40}|", flush=True)
+
+                # Accumulate noise floor on quiet chunks (peak well below speech level)
+                if peak < 500 and len(audio_data) > 0:
+                    _noise_sum   += float(np.sqrt(np.mean(audio_data.astype(np.float64) ** 2)))
+                    _noise_count += 1
+
+                # Skip prediction on silence to save CPU
+                if peak < 200:
+                    continue
+
+                prediction = self.oww_model.predict(audio_data)
+                for mdl in self.oww_model.prediction_buffer.keys():
+                    score = list(self.oww_model.prediction_buffer[mdl])[-1]
+                    if score > WAKE_WORD_THRESHOLD:
+                        print(f"[WAKE] Triggered on '{mdl}' with score: {score:.2f}", flush=True)
+                        self.oww_model.reset()
+                        # Store pre-calibrated noise floor (convert int16 RMS → float32 scale)
+                        if _noise_count >= 10:
+                            self._wake_noise_rms = (_noise_sum / _noise_count) / 32768.0
+                        return None  # Wake word triggered
 
     def record_voice_adaptive(self, filename="input.wav"):
-        print("Recording (Adaptive)...", flush=True)
-        time.sleep(0.5) 
-        try:
-            device_info = sd.query_devices(kind='input')
-            samplerate = int(device_info['default_samplerate'])
-        except: samplerate = 44100 
+        """
+        Record until the user stops speaking.
 
-        silence_threshold = 0.006
-        silence_duration = 1.5
-        max_record_time = 30.0
-        buffer = []
-        silent_chunks = 0
-        chunk_duration = 0.05 
-        chunk_size = int(samplerate * chunk_duration)
-        
-        num_silent_chunks = int(silence_duration / chunk_duration)
-        max_chunks = int(max_record_time / chunk_duration)
-        recorded_chunks = 0
-        silence_started = False
+        Pipeline:
+          1. Calibrate noise floor (0.3 s of pre-speech audio).
+          2. Set speech threshold = max(0.03, noise_floor * 4).
+          3. Wait up to MAX_WAIT_FOR_SPEECH seconds for the user to start.
+          4. Once speech is detected, stop after SILENCE_TO_STOP consecutive
+             seconds of silence — giving a natural pause window.
+        """
+        MAX_WAIT_FOR_SPEECH = 8.0   # give up if no speech starts within 8 s
+        SILENCE_TO_STOP     = float(CURRENT_CONFIG.get("silence_to_stop", 1.5))
+        MAX_RECORD_TIME     = 30.0  # hard cap regardless
+        MIN_SPEECH_SECS     = 0.3   # must capture at least this much speech
+        CALIBRATION_SECS    = 0.3   # how long to measure background noise
+        MIN_THRESHOLD       = 0.03  # absolute floor — handles very quiet rooms
+
+        samplerate = choose_input_samplerate(INPUT_DEVICE_NAME, CURRENT_CONFIG.get("input_sample_rate"))
+        chunk_size = int(samplerate * 0.05)   # 50 ms chunks
+        chunk_dur  = chunk_size / samplerate
+
+        # ── Step 1: noise floor — use pre-calibrated value from wake word loop ──
+        sd.stop()
+        time.sleep(0.1)
+        if self._wake_noise_rms is not None:
+            noise_rms = self._wake_noise_rms
+            self._wake_noise_rms = None
+            print(f"[AUDIO] Pre-calibrated noise RMS={noise_rms:.4f}", flush=True)
+        else:
+            try:
+                noise_data = sd.rec(int(samplerate * CALIBRATION_SECS),
+                                    samplerate=samplerate, channels=1,
+                                    dtype="float32", device=INPUT_DEVICE_NAME)
+                sd.wait()
+                noise_rms = float(np.sqrt(np.mean(noise_data ** 2)))
+            except Exception:
+                noise_rms = 0.005  # safe fallback
+
+        speech_threshold = max(MIN_THRESHOLD, noise_rms * 4.0)
+        print(f"[AUDIO] speech threshold={speech_threshold:.4f}", flush=True)
+
+        # ── Step 2: record with adaptive stop ─────────────────────────────
+        buffer         = []
+        speech_secs    = 0.0
+        silence_secs   = 0.0
+        speech_started = False
+        stop_event     = threading.Event()
 
         def callback(indata, frames, time_info, status):
-            nonlocal silent_chunks, recorded_chunks, silence_started
-            volume_norm = np.linalg.norm(indata) / np.sqrt(len(indata))
-            buffer.append(indata.copy())  
-            recorded_chunks += 1
-            if recorded_chunks < 5: return 
-            if volume_norm < silence_threshold:
-                silent_chunks += 1
-                if silent_chunks >= num_silent_chunks: silence_started = True
-            else: silent_chunks = 0
+            nonlocal speech_secs, silence_secs, speech_started
+            buffer.append(indata.copy())
+            rms = float(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
+            if rms >= speech_threshold:
+                speech_started = True
+                speech_secs   += chunk_dur
+                silence_secs   = 0.0
+            elif speech_started:
+                silence_secs += chunk_dur
+                if silence_secs >= SILENCE_TO_STOP and speech_secs >= MIN_SPEECH_SECS:
+                    stop_event.set()
 
         try:
-            with sd.InputStream(samplerate=samplerate, channels=1, callback=callback, 
-                                device=INPUT_DEVICE_NAME, blocksize=chunk_size): 
-                while not silence_started and recorded_chunks < max_chunks:
-                    sd.sleep(int(chunk_duration * 1000))
-        except Exception as e: return None 
-        
+            start = time.time()
+            with sd.InputStream(samplerate=samplerate, channels=1, dtype="float32",
+                                callback=callback, device=INPUT_DEVICE_NAME,
+                                blocksize=chunk_size):
+                print("Recording (Adaptive) — speak now...", flush=True)
+                while not stop_event.is_set():
+                    elapsed = time.time() - start
+                    if elapsed >= MAX_RECORD_TIME:
+                        break
+                    if not speech_started and elapsed >= MAX_WAIT_FOR_SPEECH:
+                        print("[AUDIO] No speech detected within timeout.", flush=True)
+                        return None
+                    sd.sleep(50)
+        except Exception as e:
+            print(f"[AUDIO ERROR] Adaptive recording failed: {e}", flush=True)
+            return None
+
+        total = len(buffer) * chunk_dur
+        print(f"[AUDIO] Done — {total:.1f}s total, "
+              f"speech={speech_secs:.1f}s, post-speech silence={silence_secs:.1f}s", flush=True)
+
+        if not speech_started:
+            print("[AUDIO] No speech captured.", flush=True)
+            return None
+
         return self.save_audio_buffer(buffer, filename, samplerate)
 
     def record_voice_ptt(self, filename="input.wav"):
         print("Recording (PTT)...", flush=True)
         time.sleep(0.5)
-        try:
-            device_info = sd.query_devices(kind='input')
-            samplerate = int(device_info['default_samplerate'])
-        except: samplerate = 44100 
+        samplerate = choose_input_samplerate(INPUT_DEVICE_NAME, CURRENT_CONFIG.get("input_sample_rate"))
 
         buffer = []
         def callback(indata, frames, time_info, status): buffer.append(indata.copy())
-        
+
         try:
+            sd.stop()
+            time.sleep(0.2)
             with sd.InputStream(samplerate=samplerate, channels=1, callback=callback, device=INPUT_DEVICE_NAME):
-                while self.recording_active.is_set(): sd.sleep(50)
-        except Exception as e: return None
+                while self.recording_active.is_set():
+                    sd.sleep(50)
+        except Exception as e:
+            print(f"[AUDIO ERROR] PTT recording failed: {e}", flush=True)
+            return None
             
         return self.save_audio_buffer(buffer, filename, samplerate)
 
@@ -604,6 +907,24 @@ class BotGUI:
         if not buffer: return None
         audio_data = np.concatenate(buffer, axis=0).flatten()
         audio_data = np.nan_to_num(audio_data, nan=0.0, posinf=0.0, neginf=0.0)
+
+        duration = len(audio_data) / samplerate
+        peak = float(np.max(np.abs(audio_data)))
+        print(f"[AUDIO] Captured {duration:.1f}s at {samplerate}Hz, peak={peak:.4f}", flush=True)
+
+        # Resample to 16kHz — whisper.cpp requires 16kHz input
+        # resample_poly uses polyphase FIR with antialiasing: much better quality than resample()
+        TARGET_RATE = 16000
+        if samplerate != TARGET_RATE:
+            from math import gcd
+            g = gcd(samplerate, TARGET_RATE)
+            audio_data = scipy.signal.resample_poly(audio_data, TARGET_RATE // g, samplerate // g)
+            print(f"[AUDIO] Resampled {samplerate}Hz → {TARGET_RATE}Hz ({len(audio_data)} samples)", flush=True)
+            samplerate = TARGET_RATE
+
+        if peak < 0.001:
+            print("[AUDIO] WARNING: audio is nearly silent — check mic connection and volume", flush=True)
+
         audio_data = (audio_data * 32767).astype(np.int16)
         with wave.open(filename, "wb") as wf:
             wf.setnchannels(1)
@@ -615,21 +936,58 @@ class BotGUI:
 
     def transcribe_audio(self, filename):
         print("Transcribing...", flush=True)
+        WHISPER_BIN = "./whisper.cpp/build/bin/whisper-cli"
+        whisper_model_name = CURRENT_CONFIG.get("whisper_model", "base.en")
+        WHISPER_MODEL = f"./whisper.cpp/models/ggml-{whisper_model_name}.bin"
+
+        if not os.path.exists(WHISPER_BIN):
+            print(f"[ERROR] whisper-cli not found at {WHISPER_BIN}. Run setup.sh first.", flush=True)
+            return ""
+        if not os.path.exists(WHISPER_MODEL):
+            print(f"[ERROR] Whisper model not found at {WHISPER_MODEL}.", flush=True)
+            print(f"[ERROR] Run: cd whisper.cpp && bash models/download-ggml-model.sh {whisper_model_name}", flush=True)
+            return ""
+
         try:
+            lang    = CURRENT_CONFIG.get("whisper_language", "en")
+            threads = str(int(CURRENT_CONFIG.get("whisper_threads", 4)))
             result = subprocess.run(
-                ["./whisper.cpp/build/bin/whisper-cli", "-m", "./whisper.cpp/models/ggml-base.en.bin", "-l", "en", "-t", "4", "-f", filename],
-                capture_output=True, text=True
+                [WHISPER_BIN, "-m", WHISPER_MODEL, "-l", lang, "-t", threads, "-f", filename],
+                capture_output=True, text=True, timeout=60
             )
-            transcription_lines = result.stdout.strip().split('\n')
-            if transcription_lines and transcription_lines[-1].strip():
-                last_line = transcription_lines[-1].strip()
-                if ']' in last_line: transcription = last_line.split("]")[1].strip()
-                else: transcription = last_line
-            else: transcription = ""
+
+            if result.returncode != 0:
+                error_detail = (result.stderr or result.stdout or "no output").strip()[:200]
+                print(f"[ERROR] Whisper failed (code {result.returncode}): {error_detail}", flush=True)
+                return ""
+
+            # Some whisper.cpp builds write transcription to stderr; check both
+            output = (result.stdout + result.stderr).strip()
+
+            # Collect text from ALL timestamped lines e.g. "[00:00:00 --> 00:00:03]  hello there"
+            parts = []
+            for line in output.split('\n'):
+                line = line.strip()
+                if ']' in line:
+                    text = line.split(']', 1)[-1].strip()
+                    if text:
+                        parts.append(text)
+            transcription = ' '.join(parts).strip()
+
+            # Fallback: last non-empty line (some builds omit timestamps)
+            if not transcription:
+                transcription = next(
+                    (l.strip() for l in reversed(output.split('\n')) if l.strip()), ""
+                )
+
             print(f"Heard: '{transcription}'", flush=True)
-            return transcription.strip()
+            return transcription
+
+        except subprocess.TimeoutExpired:
+            print("[ERROR] Whisper timed out after 60 seconds.", flush=True)
+            return ""
         except Exception as e:
-            print(f"Transcription Error: {e}")
+            print(f"[ERROR] Transcription error: {e}", flush=True)
             return ""
 
     def capture_image(self):
@@ -662,50 +1020,107 @@ class BotGUI:
 
         model_to_use = VISION_MODEL if img_path else TEXT_MODEL
         self.set_state(BotStates.THINKING, "Thinking...", cam_path=img_path)
-        
+
+        thinking_mode = CURRENT_CONFIG.get("thinking_mode", False)
+
+        # Qwen3/3.5 thinking-mode suppression — only applied to models that support it.
+        # Passing think:false or /no_think to gemma/llama/phi causes Ollama to stall.
+        is_qwen = "qwen" in model_to_use.lower()
+        if is_qwen and not thinking_mode:
+            effective_text = f"/no_think {text}"
+        else:
+            effective_text = text
+
         messages = []
         if img_path:
-            messages = [{"role": "user", "content": text, "images": [img_path]}]
+            messages = [{"role": "user", "content": effective_text, "images": [img_path]}]
         else:
-            user_msg = {"role": "user", "content": text}
+            user_msg = {"role": "user", "content": effective_text}
             messages = self.permanent_memory + self.session_memory + [user_msg]
-        
+
+        call_options = dict(OLLAMA_OPTIONS)
+        if is_qwen:
+            call_options["think"] = bool(thinking_mode)
+        print(f"[LLM] model={model_to_use} thinking={thinking_mode}", flush=True)
+
         self.thinking_sound_active.set()
         threading.Thread(target=self._run_thinking_sound_loop, daemon=True).start()
-        
+
         full_response_buffer = ""
-        sentence_buffer = "" 
-        
+        clean_response_buffer = ""  # full_response_buffer minus any <think> content
+        sentence_buffer = ""
+
         try:
-            stream = ollama.chat(model=model_to_use, messages=messages, stream=True, options=OLLAMA_OPTIONS)
-            
+            stream = ollama.chat(model=model_to_use, messages=messages, stream=True, options=call_options)
+
             is_action_mode = False
-            
+            speaking_started = False    # local flag — avoids tkinter async race on current_state
+            in_thinking_block = False   # tracks <think>...</think> from Qwen3/3.5
+            think_block_start = None
+            THINK_TIMEOUT = 90.0        # abort thinking block after 90 s
+
             for chunk in stream:
-                if self.interrupted.is_set(): break 
-                content = chunk['message']['content']
-                full_response_buffer += content
-                
+                if self.interrupted.is_set(): break
+                raw = chunk['message']['content']
+                full_response_buffer += raw
+
+                # ── Strip <think>...</think> reasoning blocks ──────────────
+                if '<think>' in raw:
+                    if not in_thinking_block:
+                        print("[LLM] <think> block started — waiting for </think>", flush=True)
+                        think_block_start = time.time()
+                    in_thinking_block = True
+                if '</think>' in raw:
+                    in_thinking_block = False
+                    think_block_start = None
+                    raw = raw.split('</think>', 1)[-1]
+                    print("[LLM] </think> ended — real response begins", flush=True)
+                if in_thinking_block:
+                    # Safety timeout — if thinking takes too long, bail out
+                    if think_block_start and (time.time() - think_block_start) > THINK_TIMEOUT:
+                        print(f"[LLM] <think> block exceeded {THINK_TIMEOUT}s — skipping rest of block", flush=True)
+                        in_thinking_block = False
+                        think_block_start = None
+                    continue
+                content = raw
+                if not content:
+                    continue
+                clean_response_buffer += content
+                # ──────────────────────────────────────────────────────────
+
                 if '{"' in content or "action:" in content.lower():
                     is_action_mode = True
                     self.thinking_sound_active.clear()
-                    continue 
+                    continue
 
                 if is_action_mode: continue
 
                 self.thinking_sound_active.clear()
-                if self.current_state != BotStates.SPEAKING:
+                if not speaking_started:
+                    speaking_started = True
                     self.set_state(BotStates.SPEAKING, "Speaking...", cam_path=img_path)
                     self.append_to_text("BOT: ", newline=False)
 
                 self._stream_to_text(content)
-                
+
                 sentence_buffer += content
-                if any(punct in content for punct in ".!?\n"):
+                # Flush to TTS on: sentence-end punctuation, OR comma/newline
+                # with enough content (avoid speaking tiny fragments), OR when
+                # buffer grows long without any punctuation (keeps latency low).
+                hard_end  = any(p in content for p in ".!?")
+                soft_break = any(p in content for p in ",;\n") and len(sentence_buffer) > 40
+                forced     = len(sentence_buffer) > 120
+                if hard_end or soft_break or forced:
                     clean_sentence = sentence_buffer.strip()
                     if clean_sentence and re.search(r'[a-zA-Z0-9]', clean_sentence):
                         with self.tts_queue_lock: self.tts_queue.append(clean_sentence)
                     sentence_buffer = ""
+
+            # Flush any content left in the buffer after the stream ends.
+            # This handles responses that don't end with sentence-ending punctuation.
+            if sentence_buffer.strip() and re.search(r'[a-zA-Z0-9]', sentence_buffer):
+                with self.tts_queue_lock: self.tts_queue.append(sentence_buffer.strip())
+                sentence_buffer = ""
 
             if is_action_mode:
                 action_data = self.extract_json_from_text(full_response_buffer)
@@ -775,7 +1190,9 @@ class BotGUI:
                         self.session_memory.append({"role": "assistant", "content": final_text})
             else:
                 self.append_to_text("")
-                self.session_memory.append({"role": "assistant", "content": full_response_buffer}) 
+                # Save clean response (no <think> blocks) so the context sent on
+                # the next turn doesn't grow with thousands of reasoning tokens.
+                self.session_memory.append({"role": "assistant", "content": clean_response_buffer})
             
             self.wait_for_tts()
             self.set_state(BotStates.IDLE, "Ready")
@@ -820,22 +1237,25 @@ class BotGUI:
             self.current_audio_process.stdin.close() 
 
             try:
-                device_info = sd.query_devices(kind='output')
+                device_info = sd.query_devices(OUTPUT_DEVICE_NAME if OUTPUT_DEVICE_NAME is not None else sd.default.device[1])
                 native_rate = int(device_info['default_samplerate'])
-            except:
-                native_rate = 48000 
+            except Exception:
+                native_rate = 48000
 
             PIPER_RATE = 22050
             use_native_rate = False
-            
+
             try:
-                sd.check_output_settings(device=None, samplerate=PIPER_RATE)
-            except:
+                sd.check_output_settings(device=OUTPUT_DEVICE_NAME, samplerate=PIPER_RATE)
+            except Exception:
                 use_native_rate = True
 
-            with sd.RawOutputStream(samplerate=native_rate if use_native_rate else PIPER_RATE, 
-                                    channels=1, dtype='int16', 
-                                    device=None, latency='low', blocksize=2048) as stream:
+            print(f"[PIPER] Output device={_device_label(OUTPUT_DEVICE_NAME)} "
+                  f"rate={native_rate if use_native_rate else PIPER_RATE}", flush=True)
+
+            with sd.RawOutputStream(samplerate=native_rate if use_native_rate else PIPER_RATE,
+                                    channels=1, dtype='int16',
+                                    device=OUTPUT_DEVICE_NAME, latency='low', blocksize=2048) as stream:
                 while True:
                     if self.interrupted.is_set(): break
                     data = self.current_audio_process.stdout.read(4096)
@@ -885,20 +1305,20 @@ class BotGUI:
                 audio = np.frombuffer(data, dtype=np.int16)
 
             try:
-                device_info = sd.query_devices(kind='output')
+                device_info = sd.query_devices(OUTPUT_DEVICE_NAME if OUTPUT_DEVICE_NAME is not None else sd.default.device[1])
                 native_rate = int(device_info['default_samplerate'])
-            except:
-                native_rate = 48000 
+            except Exception:
+                native_rate = 48000
 
             playback_rate = file_sr
             try:
-                sd.check_output_settings(device=None, samplerate=file_sr)
-            except:
+                sd.check_output_settings(device=OUTPUT_DEVICE_NAME, samplerate=file_sr)
+            except Exception:
                 playback_rate = native_rate
                 num_samples = int(len(audio) * (native_rate / file_sr))
                 audio = scipy.signal.resample(audio, num_samples).astype(np.int16)
 
-            sd.play(audio, playback_rate)
+            sd.play(audio, playback_rate, device=OUTPUT_DEVICE_NAME)
             sd.wait() 
         except: pass
 

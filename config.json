@@ -1,8 +1,28 @@
 {
-    "text_model": "gemma3:1b",
-    "vision_model": "moondream",
-    "voice_model": "piper/en_GB-semaine-medium.onnx",
-    "system_prompt": "You are a helpful robot assistant running on a Raspberry Pi. You have access to the following tools. To use one, reply ONLY with the JSON format shown:\n\n1. Check Time: {\"action\": \"get_time\"}\n2. Take Photo: {\"action\": \"capture_image\"}\n3. Search Web: {\"action\": \"search_web\", \"query\": \"your search term\"}\n\nIf no tool is needed, just reply normally. Keep responses short and friendly.",
-    "chat_memory": true,
-    "camera_rotation": 180
+    "_comment": "All keys are optional — missing keys fall back to defaults in agent.py",
+
+    "text_model":           "gemma3:1b",
+    "vision_model":         "moondream",
+    "voice_model":          "piper/en_GB-semaine-medium.onnx",
+
+    "system_prompt_extras": "",
+    "chat_memory":          true,
+
+    "wake_word_model":      "./wakeword.onnx",
+    "wake_word_threshold":  0.5,
+
+    "silence_to_stop":      1.5,
+
+    "whisper_model":        "base.en",
+    "whisper_language":     "en",
+    "whisper_threads":      4,
+
+    "llm_temperature":      0.7,
+    "llm_threads":          4,
+    "thinking_mode":        false,
+
+    "camera_rotation":      0,
+    "input_device":         null,
+    "input_sample_rate":    null,
+    "output_device":        null
 }
