@@ -174,7 +174,7 @@ The practical speed floor for a comfortable voice assistant is ~5 tok/s — belo
 
 | Model | Ollama tag | Q4 RAM | GPQA | Vision | Est. tok/s | Notes |
 |-------|-----------|--------|------|--------|-----------|-------|
-| **Qwen3-30B-A3B** | see below | ~10–15 GB | 30B-class | ❌ | 6–8 | ⭐ Best quality that fits — MoE, text only |
+| **Qwen3-30B-A3B** | see below | ~12 GB | 30B-class | ❌ | ~8 | ⭐ Best quality that fits — MoE, text only |
 | **Qwen3.5 9B** | `qwen3.5:9b` | ~5 GB | 81.7 | ✅ native | 2–4 | Best reasoning with vision |
 | **Qwen3.5 4B** | `qwen3.5:4b` | ~2.5 GB | ~74 | ✅ native | 5–8 | Best all-round with vision |
 | **Qwen3.5 2B** | `qwen3.5:2b` | ~1.5 GB | ~55 | ✅ native | 12–18 | Best speed+vision combo |
@@ -219,17 +219,25 @@ GPQA 81.7 — beats GPT-OSS-120B on graduate-level science questions. Fits in 16
 Phi-4-mini reasoning matches DeepSeek-R1-Distill 7B on AIME math at 3.8B parameters.
 
 **Best quality, text-only (16 GB Pi 5)**
+
+Qwen3-30B-A3B is a Mixture-of-Experts model — 30B total parameters but only ~3.3B active per token. This gives it 30B-class knowledge at ~8 tok/s inference speed, comparable to Qwen3.5:4b but far more capable. No vision support; pair with a small vision model for the camera.
+
+> **Important:** The default `ollama pull qwen3:30b-a3b` pulls a 19 GB Q4_K_M quant that **does not fit** in 16 GB. Use the byteshape KQ-2 quant instead:
+
 ```bash
-# ~6.68 tok/s, 97.97% of BF16 quality, uses ~12.4 GB RAM
-ollama run "hf.co/byteshape/Qwen3-30B-A3B-Instruct-2507-GGUF:Qwen3-30B-A3B-Instruct-2507-Q3_K_S-3.25bpw.gguf"
+# KQ-2: ~8 tok/s, 94% of BF16 quality, ~12 GB RAM (recommended)
+ollama run hf.co/byteshape/Qwen3-30B-A3B-Instruct-2507-GGUF:KQ-2.gguf
+
+# KQ-5: ~6.7 tok/s, 98% of BF16 quality, ~14.5 GB RAM (higher quality, tighter fit)
+ollama run hf.co/byteshape/Qwen3-30B-A3B-Instruct-2507-GGUF:KQ-5.gguf
 ```
-Qwen3-30B-A3B is a Mixture-of-Experts model — 30B total parameters but only ~3B active per token, so inference speed stays around 6–8 tok/s on Pi5 despite the large model. No vision support; pair with `moondream` or `qwen3.5:2b` for the camera. To use it set:
+
+Once pulled, set in `config.json`:
 ```json
-{ "text_model": "hf.co/byteshape/Qwen3-30B-A3B-Instruct-2507-GGUF:Qwen3-30B-A3B-Instruct-2507-Q3_K_S-3.25bpw.gguf", "vision_model": "qwen3.5:2b" }
-```
-For maximum quality at the cost of ~1 tok/s, use `KQ-6` (13.8 GB, 98.75%):
-```bash
-ollama run "hf.co/byteshape/Qwen3-30B-A3B-Instruct-2507-GGUF:Qwen3-30B-A3B-Instruct-2507-Q4_K_S-3.61bpw.gguf"
+{
+    "text_model":   "hf.co/byteshape/Qwen3-30B-A3B-Instruct-2507-GGUF:KQ-2.gguf",
+    "vision_model": "qwen3.5:2b"
+}
 ```
 
 **Interesting alternative — Gemma 3n E4B**
@@ -254,14 +262,17 @@ All Qwen3.5 models have vision baked in (early fusion multimodal training, not a
 ### Pull models
 
 ```bash
-# Recommended starting point
+# Recommended starting point (vision + text, ~3 GB)
 ollama pull qwen3.5:4b
 
-# Or for best quality
+# Best quality with vision (~5 GB)
 ollama pull qwen3.5:9b
 
-# Or for maximum speed
+# Maximum speed with vision (~1.5 GB)
 ollama pull qwen3.5:2b
+
+# Best quality text-only — MoE, ~12 GB, ~8 tok/s on Pi5
+ollama run hf.co/byteshape/Qwen3-30B-A3B-Instruct-2507-GGUF:KQ-2.gguf
 ```
 
 ---
