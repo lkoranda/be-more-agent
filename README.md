@@ -174,8 +174,9 @@ The practical speed floor for a comfortable voice assistant is ~5 tok/s — belo
 
 | Model | Ollama tag | Q4 RAM | GPQA | Vision | Est. tok/s | Notes |
 |-------|-----------|--------|------|--------|-----------|-------|
-| **Qwen3.5 9B** | `qwen3.5:9b` | ~5 GB | 81.7 | ✅ native | 2–4 | Best reasoning, slightly slow |
-| **Qwen3.5 4B** | `qwen3.5:4b` | ~2.5 GB | ~74 | ✅ native | 5–8 | ⭐ Best all-round |
+| **Qwen3-30B-A3B** | see below | ~10–15 GB | 30B-class | ❌ | 6–8 | ⭐ Best quality that fits — MoE, text only |
+| **Qwen3.5 9B** | `qwen3.5:9b` | ~5 GB | 81.7 | ✅ native | 2–4 | Best reasoning with vision |
+| **Qwen3.5 4B** | `qwen3.5:4b` | ~2.5 GB | ~74 | ✅ native | 5–8 | Best all-round with vision |
 | **Qwen3.5 2B** | `qwen3.5:2b` | ~1.5 GB | ~55 | ✅ native | 12–18 | Best speed+vision combo |
 | **Qwen3.5 0.8B** | `qwen3.5:0.8b` | ~0.6 GB | ~35 | ✅ native | 20–30 | Ultra-fast, limited reasoning |
 | **Gemma 3n E4B** | `gemma3n:e4b` | ~3 GB | n/a | ✅ vision+audio | 8–15 | Edge-optimised ARM, audio input |
@@ -216,6 +217,20 @@ GPQA 81.7 — beats GPT-OSS-120B on graduate-level science questions. Fits in 16
 { "text_model": "phi4-mini-reasoning", "vision_model": "moondream" }
 ```
 Phi-4-mini reasoning matches DeepSeek-R1-Distill 7B on AIME math at 3.8B parameters.
+
+**Best quality, text-only (16 GB Pi 5)**
+```bash
+# ~6.68 tok/s, 97.97% of BF16 quality, uses ~12.4 GB RAM
+ollama run "hf.co/byteshape/Qwen3-30B-A3B-Instruct-2507-GGUF:Qwen3-30B-A3B-Instruct-2507-Q3_K_S-3.25bpw.gguf"
+```
+Qwen3-30B-A3B is a Mixture-of-Experts model — 30B total parameters but only ~3B active per token, so inference speed stays around 6–8 tok/s on Pi5 despite the large model. No vision support; pair with `moondream` or `qwen3.5:2b` for the camera. To use it set:
+```json
+{ "text_model": "hf.co/byteshape/Qwen3-30B-A3B-Instruct-2507-GGUF:Qwen3-30B-A3B-Instruct-2507-Q3_K_S-3.25bpw.gguf", "vision_model": "qwen3.5:2b" }
+```
+For maximum quality at the cost of ~1 tok/s, use `KQ-6` (13.8 GB, 98.75%):
+```bash
+ollama run "hf.co/byteshape/Qwen3-30B-A3B-Instruct-2507-GGUF:Qwen3-30B-A3B-Instruct-2507-Q4_K_S-3.61bpw.gguf"
+```
 
 **Interesting alternative — Gemma 3n E4B**
 ```json
